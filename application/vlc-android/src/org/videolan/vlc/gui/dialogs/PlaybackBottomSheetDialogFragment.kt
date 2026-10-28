@@ -81,8 +81,9 @@ abstract class PlaybackBottomSheetDialogFragment:VLCBottomSheetDialogFragment(),
     override fun update() {
         if (playbackService?.playlistManager?.hasCurrentMedia() == true)
             onMediaChanged()
-        else if (dismissOnPlaybackEnded)
-            dismiss()
+        // Playback also stops once the player has saved its state (screen turned off while paused)
+        else if (dismissOnPlaybackEnded && isAdded)
+            dismissAllowingStateLoss()
     }
 
     override fun onMediaEvent(event: IMedia.Event) { }
