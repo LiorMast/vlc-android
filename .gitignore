@@ -28,6 +28,9 @@ application/remote-access-client/assets/**
 # debug symbols
 .dbg
 
+# APKs copied by build-apk.sh
+/out/
+
 # Local configuration
 local.properties
 env.sh
