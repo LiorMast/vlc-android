@@ -43,6 +43,7 @@ import android.widget.ImageView
 import android.widget.TextView
 import androidx.annotation.StringRes
 import androidx.appcompat.content.res.AppCompatResources
+import androidx.appcompat.widget.PopupMenu
 import androidx.appcompat.widget.ViewStubCompat
 import androidx.constraintlayout.widget.ConstraintLayout
 import androidx.constraintlayout.widget.ConstraintSet
@@ -62,6 +63,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.videolan.libvlc.util.AndroidUtil
+import org.videolan.medialibrary.Tools
 import org.videolan.medialibrary.interfaces.media.MediaWrapper
 import org.videolan.medialibrary.media.MediaWrapperImpl
 import org.videolan.resources.AndroidDevices
@@ -102,6 +104,8 @@ import org.videolan.vlc.gui.helpers.UiTools
 import org.videolan.vlc.gui.helpers.UiTools.showVideoTrack
 import org.videolan.vlc.gui.helpers.hf.checkPIN
 import org.videolan.vlc.gui.view.PlayerProgress
+import org.videolan.vlc.gui.video.dualview.DualViewBar
+import org.videolan.vlc.gui.video.dualview.DualViewDelegate
 import org.videolan.vlc.isVLC4
 import org.videolan.vlc.manageAbRepeatStep
 import org.videolan.vlc.media.MediaUtils
@@ -115,6 +119,11 @@ import java.text.DateFormat
 import java.util.Calendar
 import java.util.Locale
 
+
+private const val DUAL_VIEW_RESUME = 1
+private const val DUAL_VIEW_SPLIT_NOW = 2
+private const val DUAL_VIEW_SPLIT_MIDDLE = 3
+private const val DUAL_VIEW_SPLIT_MIDDLE_SYNC = 4
 
 class VideoPlayerOverlayDelegate (private val player: VideoPlayerActivity) {
 
@@ -446,11 +455,13 @@ class VideoPlayerOverlayDelegate (private val player: VideoPlayerActivity) {
             if (player.isInPictureInPictureMode) return
             initOverlay()
             if (!::hudBinding.isInitialized) return
+            updateDualViewToggle()
             overlayTimeout = when {
                 service.playlistManager.videoStatsOn.value == true -> VideoPlayerActivity.OVERLAY_INFINITE
                 player.isTalkbackIsEnabled() -> VideoPlayerActivity.OVERLAY_INFINITE
                 Settings.videoHudDelay == -1 -> VideoPlayerActivity.OVERLAY_INFINITE
                 isBookmarkShown() -> VideoPlayerActivity.OVERLAY_INFINITE
+                player.dualViewDelegate.isBarOpen -> VideoPlayerActivity.OVERLAY_INFINITE
                 timeout != 0 -> timeout
                 service.isPlaying -> when (Settings.videoHudDelay) {
                     -1 -> VideoPlayerActivity.OVERLAY_INFINITE
@@ -595,10 +606,7 @@ class VideoPlayerOverlayDelegate (private val player: VideoPlayerActivity) {
 
                     service.manageAbRepeatStep(hudBinding.abRepeatReset, hudBinding.abRepeatStop, hudBinding.abRepeatContainer, abRepeatAddMarker)
                 }
-                player.dualViewDelegate.state.observe(player) { state ->
-                    hudBinding.dualViewSplit = state?.let { it.timeline.split / it.timeline.length.toFloat() } ?: 0F
-                    hudBinding.dualViewMarkerContainer.visibility = if (state == null) View.GONE else View.VISIBLE
-                }
+                initDualView()
                 service.playlistManager.delayValue.observe(player) {
                     player.delayDelegate.delayChanged(it, service)
                 }
@@ -1013,6 +1021,7 @@ class VideoPlayerOverlayDelegate (private val player: VideoPlayerActivity) {
         if (!fromUser && (player.isTalkbackIsEnabled() && !forceTalkback)) return
         if (player.isShowing) {
             if (isBookmarkShown()) hideBookmarks()
+            dualViewMenu?.dismiss()
             player.handler.removeMessages(VideoPlayerActivity.FADE_OUT)
             if (!player.displayManager.isPrimary) {
                 overlayBackground?.startAnimation(AnimationUtils.loadAnimation(player, android.R.anim.fade_out))
@@ -1148,6 +1157,71 @@ class VideoPlayerOverlayDelegate (private val player: VideoPlayerActivity) {
                 showBookmarks()
             }
         }
+    }
+
+    /**
+     * Dual view's button, pins and bar
+     */
+    private fun initDualView() {
+        val dualView = player.dualViewDelegate
+        hudBinding.dualViewPins.delegate = dualView
+        hudBinding.dualViewToggle.setOnClickListener { view ->
+            if (dualView.isActive) dualView.toggleBar() else showDualViewMenu(view)
+        }
+        dualView.state.observe(player) { state ->
+            hudBinding.dualViewPins.timeline = state?.timeline
+            hudBinding.dualViewPins.visibility = if (state == null) View.GONE else View.VISIBLE
+            updateDualViewToggle()
+            updateDualViewBar()
+        }
+        dualView.barOpen.observe(player) { updateDualViewBar() }
+    }
+
+    private fun updateDualViewToggle() {
+        val dualView = player.dualViewDelegate
+        hudBinding.dualViewToggle.visibility = if (dualView.isActive || dualView.isAvailable()) View.VISIBLE else View.GONE
+        if (dualView.isActive) hudBinding.dualViewToggle.setColorFilter(ContextCompat.getColor(player, R.color.orange500))
+        else hudBinding.dualViewToggle.clearColorFilter()
+    }
+
+    private var dualViewBarShown = false
+    private var dualViewMenu: PopupMenu? = null
+
+    private fun updateDualViewBar() {
+        val dualView = player.dualViewDelegate
+        val open = dualView.isBarOpen
+        val bar = player.findViewById<DualViewBar>(R.id.dual_view_bar)
+                ?: if (open) (player.findViewById<ViewStubCompat>(R.id.dual_view_bar_stub)?.inflate() as? DualViewBar)?.also { it.bind(dualView, player) } else null
+        bar?.visibility = if (open) View.VISIBLE else View.GONE
+        if (open == dualViewBarShown) return
+        dualViewBarShown = open
+        // Keep the controls up while the bar is open, so syncing doesn't need a pause
+        if (open) showOverlayTimeout(VideoPlayerActivity.OVERLAY_INFINITE) else showOverlay(true)
+    }
+
+    private fun showDualViewMenu(anchor: View) {
+        val dualView = player.dualViewDelegate
+        val length = player.service?.length ?: return
+        val saved = dualView.savedTimeline()
+        dualViewMenu = PopupMenu(player, anchor).apply {
+            setOnDismissListener { dualViewMenu = null }
+            if (saved != null) menu.add(0, DUAL_VIEW_RESUME, 0, player.getString(R.string.dual_view_resume,
+                    Tools.millisToString(saved.timeline.split), DualViewDelegate.formatShift(saved.timeline.segments[0].offset - saved.timeline.split)))
+            menu.add(0, DUAL_VIEW_SPLIT_NOW, 1, player.getString(R.string.dual_view_split_here, Tools.millisToString(dualView.currentMainTime().coerceAtLeast(0L))))
+            menu.add(0, DUAL_VIEW_SPLIT_MIDDLE, 2, player.getString(R.string.dual_view_split_middle_at, Tools.millisToString(length / 2)))
+            menu.add(0, DUAL_VIEW_SPLIT_MIDDLE_SYNC, 3, R.string.dual_view_split_middle_sync)
+            setOnMenuItemClickListener { item ->
+                when (item.itemId) {
+                    DUAL_VIEW_RESUME -> dualView.resume()
+                    DUAL_VIEW_SPLIT_NOW -> dualView.splitNow()
+                    DUAL_VIEW_SPLIT_MIDDLE -> dualView.splitMiddle(false)
+                    DUAL_VIEW_SPLIT_MIDDLE_SYNC -> dualView.splitMiddle(true)
+                }
+                true
+            }
+            show()
+        }
+        showOverlay()
     }
 
     fun isBookmarkShown() = bookmarkListDelegate != null && bookmarkListDelegate?.visible == true

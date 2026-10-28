@@ -12,7 +12,7 @@ import org.videolan.vlc.gui.video.dualview.SyncController.Action
 @RunWith(JUnit4::class)
 class SyncControllerTest {
 
-    private val timeline = DualViewTimeline(100_000, 50_000, 50_000)
+    private val timeline = DualViewTimeline.of(100_000, 50_000, 50_000)
     private lateinit var controller: SyncController
 
     @Before
@@ -119,7 +119,7 @@ class SyncControllerTest {
     @Test
     fun offsetChangeWhilePausedRealigns() {
         controller.update(input(2_000, 10_000, 60_000, mainPlaying = false))
-        controller.timeline = timeline.withOffset(50_050)
+        controller.timeline = timeline.withOffsetAt(0, 50_050)
         controller.onTimelineChanged()
         val actions = controller.update(input(2_100, 10_000, 60_000, mainPlaying = false, slavePlaying = false)).withoutUiUpdates()
         assertEquals(listOf(Action.Seek(60_050)), actions)
@@ -127,7 +127,7 @@ class SyncControllerTest {
 
     @Test
     fun windowParksOnceWhenItsPovHasNoFootage() {
-        controller.timeline = DualViewTimeline(100_000, 50_000, 45_000)
+        controller.timeline = DualViewTimeline.of(100_000, 50_000, 45_000)
         val actions = controller.update(input(2_000, 1_000, 51_000))
         assertTrue(actions.contains(Action.CounterpartChanged(Counterpart(2, 50_000, CounterpartState.NOT_STARTED))))
         assertTrue(actions.contains(Action.Pause))
@@ -151,6 +151,51 @@ class SyncControllerTest {
     fun noPauseWhenJumpingPastTheEndOfPov1() {
         controller.update(input(2_000, 10_000, 60_000))
         val actions = controller.update(input(2_100, 49_900, 60_100, seekTarget = 49_900))
+        assertFalse(actions.any { it is Action.PauseMain })
+    }
+
+    @Test
+    fun crossingACutSeeksAtOnce() {
+        controller.timeline = DualViewTimeline(100_000, 0, 50_000, 100_000, listOf(Segment(0, 50_000), Segment(20_000, 50_200)))
+        controller.update(input(2_000, 19_800, 69_800))
+        val actions = controller.update(input(2_100, 20_000, 70_000)).withoutUiUpdates()
+        assertTrue(actions.any { it is Action.Seek && it.time >= 70_200 })
+    }
+
+    @Test
+    fun windowParksInAGap() {
+        controller.timeline = DualViewTimeline(100_000, 0, 50_000, 100_000, listOf(Segment(0, 51_000), Segment(20_000, 54_000)))
+        val actions = controller.update(input(2_000, 72_000, 19_000))
+        assertTrue(actions.contains(Action.Pause))
+        assertTrue(actions.any { it is Action.Seek })
+    }
+
+    @Test
+    fun bigOffsetChangeWhilePlayingSeeks() {
+        controller.update(input(2_000, 10_000, 60_000))
+        controller.timeline = timeline.withOffsetAt(0, 51_000)
+        controller.onTimelineChanged()
+        val actions = controller.update(input(2_100, 10_100, 60_100)).withoutUiUpdates()
+        assertTrue(actions.any { it is Action.Seek && it.time >= 61_100 })
+    }
+
+    @Test
+    fun movingTheSplitPastThePlayheadDoesntPause() {
+        controller.update(input(2_000, 49_000, 99_000 - 300))
+        // The split moves to 49.2 s: the main player is now just past where POV 1 ends
+        controller.timeline = DualViewTimeline.of(100_000, 49_200, 50_000)
+        controller.onTimelineChanged()
+        val actions = controller.update(input(2_100, 49_100, 99_100))
+        assertFalse(actions.any { it is Action.PauseMain })
+    }
+
+    @Test
+    fun noPauseWhenASeekLandsJustBeforeTheSplit() {
+        // A fast seek to the split lands on a keyframe before it, then plays on
+        controller.update(input(2_000, 10_000, 60_000))
+        controller.update(input(2_100, 49_950, 99_950, seekTarget = 49_950))
+        controller.update(input(2_200, 49_700, 99_700))
+        val actions = controller.update(input(2_300, 49_900, 99_900))
         assertFalse(actions.any { it is Action.PauseMain })
     }
 }

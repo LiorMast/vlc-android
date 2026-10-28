@@ -155,6 +155,7 @@ class SyncController {
 
     private var lastCounterpart: Counterpart? = null
     private var lastMainTime = -1L
+    private var lastSeekAt = Long.MIN_VALUE / 2
     private var settleUntil = 0L
     private var filteredError = 0F
     private var hasError = false
@@ -170,10 +171,12 @@ class SyncController {
     private var realign = false
 
     /**
-     * The split or the offset changed
+     * The bounds, the cuts or the offsets changed
      */
     fun onTimelineChanged() {
         realign = true
+        // Moving the split under the main player isn't playback reaching it
+        lastMainTime = -1L
     }
 
     /**
@@ -211,14 +214,21 @@ class SyncController {
             actions.add(Action.CounterpartChanged(counterpart))
         lastCounterpart = counterpart
 
-        // Playback reached the end of POV 1: the other POV would just start over
+        // Playback reached the end of POV 1: the other POV would just start over. Not right after
+        // a seek, which can land a bit before its target and play on into POV 2
+        if (input.mainSeekTarget >= 0 || input.mainJumped) lastSeekAt = input.now
         val guard = timeline.split - END_GUARD
-        if (input.mainPlaying && input.mainSeekTarget < 0 && !input.mainJumped && lastMainTime in 0 until guard && mainTime >= guard)
+        if (input.mainPlaying && input.mainSeekTarget < 0 && !input.mainJumped && input.now - lastSeekAt > SEEK_QUIET
+                && lastMainTime in 0 until guard && mainTime >= guard)
             actions.add(Action.PauseMain(1))
         lastMainTime = mainTime
 
         val slavePlaying = if (input.now < commandUntil) commandedPlaying else input.slavePlaying
         val inRange = counterpart.state == CounterpartState.PLAYING
+        // Playback crossed a cut: the matching moment jumped
+        val crossedCut = previous != null && previous.segment != counterpart.segment && previous.pov == counterpart.pov && !realign
+        // The timeline was edited while playing (offset dragged): don't steer slowly over a big change
+        val movedFar = realign && input.slaveTime >= 0 && abs(input.slaveTime - counterpart.time) > REALIGN_SEEK
         when {
             input.mainSeekTarget >= 0 -> {
                 // Both players seek at the same time and buffer alike: no lead
@@ -266,7 +276,7 @@ class SyncController {
                 heldInStep = false
                 parkedAt = -1L
             }
-            input.mainJumped -> {
+            input.mainJumped || crossedCut || movedFar -> {
                 actions.add(Action.Seek(counterpart.time + lead(input.mainRate)))
                 learnLead = true
                 settle(input.now, SETTLE_AFTER_SEEK)
@@ -337,6 +347,7 @@ class SyncController {
 
         const val TICK = 100L
         const val END_GUARD = 150L
+        const val SEEK_QUIET = 1_000L
         const val OPEN_LEAD = 600L
         const val MAX_LEAD = 1_500L
         const val SETTLE_AT_START = 1_500L
@@ -345,6 +356,7 @@ class SyncController {
         const val SETTLE_AFTER_RESUME = 500L
         const val COMMAND_GRACE = 500L
         const val PARK_TOLERANCE = 40L
+        const val REALIGN_SEEK = 250L
         const val SEEK_THRESHOLD = 400F
         const val RATE_THRESHOLD = 25F
         const val IN_STEP = 10F

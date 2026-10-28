@@ -35,10 +35,10 @@ import androidx.annotation.RequiresApi
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.ensureActive
-import kotlinx.coroutines.sync.Semaphore
-import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
+import org.videolan.vlc.gui.video.dualview.DualViewSource
 import java.io.IOException
 import java.nio.ByteOrder
 import java.util.concurrent.atomic.AtomicLong
@@ -58,19 +58,23 @@ class AndroidAudioReader(private val context: Context, private val uri: Uri) : A
         val total = ranges.sumOf { it.last - it.first }.coerceAtLeast(1L).toFloat()
         val done = AtomicLong()
         // Every buffer handed to or taken from the decoder is a round trip to the media service, so
-        // decoding is bound by their latency, not by the CPU: decode several chunks at once
-        val decoders = Semaphore(PARALLEL_DECODERS)
+        // decoding is bound by their latency, not by the CPU: decode several chunks at once.
+        // Each decoder streams on its own lane of a proxy on this device, see DualViewSource
+        val slots = Channel<Int>(PARALLEL_DECODERS).apply { for (slot in 1..PARALLEL_DECODERS) trySend(slot) }
         val parts = ranges.map { range ->
             (range.first until range.last step CHUNK_MS).map { start ->
                 val chunk = start..minOf(start + CHUNK_MS, range.last)
                 async {
-                    decoders.withPermit {
-                        val extractor = open()
+                    val slot = slots.receive()
+                    try {
+                        val extractor = open(DualViewSource.audioLane(slot))
                         try {
                             decode(extractor, chunk).also { progress(done.addAndGet(chunk.last - chunk.first) / total) }
                         } finally {
                             extractor.release()
                         }
+                    } finally {
+                        slots.trySend(slot)
                     }
                 }
             }
@@ -87,13 +91,13 @@ class AndroidAudioReader(private val context: Context, private val uri: Uri) : A
         }
     }
 
-    private fun open(): MediaExtractor {
+    private fun open(lane: String): MediaExtractor {
         val extractor = MediaExtractor()
         try {
             when (uri.scheme) {
                 "file" -> extractor.setDataSource(uri.path ?: throw IOException("No path in $uri"))
                 "content" -> extractor.setDataSource(context, uri, null)
-                else -> extractor.setDataSource(uri.toString(), emptyMap())
+                else -> extractor.setDataSource(DualViewSource.withLane(uri.toString(), lane), emptyMap())
             }
             extractor.selectTrack(audioTrack(extractor))
         } catch (e: Exception) {

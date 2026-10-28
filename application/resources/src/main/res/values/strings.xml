@@ -1448,18 +1448,11 @@
     <string name="forum_url" translatable="false">https://forum.videolan.org/viewforum.php?f=35</string>
     <string name="doc_url" translatable="false">https://docs.videolan.me/vlc-user/android/</string>
     <string name="dual_view">Dual view</string>
-    <string name="dual_view_explanation">For videos holding two recordings of the same event, one after the other: watch both points of view at once.</string>
-    <string name="dual_view_split_now">Split now</string>
-    <string name="dual_view_split_middle">Split middle</string>
-    <string name="dual_view_split_at">POV 2 starts at %s</string>
-    <string name="dual_view_sync_on_split_middle">Sync with audio when splitting in the middle</string>
     <string name="dual_view_resume">Resume: POV 2 at %1$s, offset %2$s</string>
     <string name="dual_view_audio">Audio</string>
     <string name="dual_view_pov">POV %d</string>
-    <string name="dual_view_offset">Offset</string>
     <string name="dual_view_offset_decrease">Decrease the offset by one frame</string>
     <string name="dual_view_offset_increase">Increase the offset by one frame</string>
-    <string name="dual_view_sync_audio">Sync with audio</string>
     <string name="dual_view_swap">Swap views</string>
     <string name="dual_view_turn_off">Turn off dual view</string>
     <string name="dual_view_audio_from_window">Play this view\'s audio</string>
@@ -1468,7 +1461,6 @@
     <string name="dual_view_reading_audio">Reading audio… %d%%</string>
     <string name="dual_view_matching_audio">Matching audio…</string>
     <string name="dual_view_synced">Synced with the audio, offset %s</string>
-    <string name="dual_view_synced_hint">Synced with the audio, offset %s. Sound reaches each camera at a slightly different time, so if the pictures don\'t quite line up, fine-tune a frame at a time.</string>
     <string name="dual_view_no_match">Couldn\'t match the audio. Line the pictures up with the offset buttons, a frame at a time.</string>
     <string name="dual_view_unreadable">Couldn\'t read this video\'s audio</string>
     <string name="dual_view_too_short">This video is too short to match its audio</string>
@@ -1478,4 +1470,33 @@
     <string name="dual_view_ended">POV %d has ended</string>
     <string name="dual_view_no_footage">POV %d has no footage at this moment</string>
     <string name="dual_view_player_error">This device can\'t play a second view of this video</string>
+    <string name="dual_view_split_here">Split here (%s)</string>
+    <string name="dual_view_split_middle_at">Split in the middle (%s)</string>
+    <string name="dual_view_split_middle_sync">Split in the middle and match the audio</string>
+    <string name="dual_view_sync_here">Sync here</string>
+    <string name="dual_view_waveform">Waveform</string>
+    <string name="dual_view_waveform_description">Audio of both points of view around the current moment. Drag a strip sideways until its peaks line up with the other\'s.</string>
+    <string name="dual_view_waveform_info">%1$s · match %2$d%%</string>
+    <string name="dual_view_overlay">Overlay</string>
+    <string name="dual_view_cut_here">Cut here</string>
+    <string name="dual_view_cut_added">Cut added: offset changes now apply from here on</string>
+    <string name="dual_view_scan">Find cuts</string>
+    <string name="dual_view_scanning">Finding cuts… %d%%</string>
+    <string name="dual_view_undo">Undo</string>
+    <string name="dual_view_cut_found">Cut found at %1$s, offset %2$s after it</string>
+    <plurals name="dual_view_scanned">
+        <item quantity="one">Found %d cut</item>
+        <item quantity="other">Found %d cuts</item>
+    </plurals>
+    <string name="dual_view_offset_segment">%1$s · %2$d/%3$d</string>
+    <string name="dual_view_gap">POV %d has no footage here: it was cut</string>
+    <string name="dual_view_outside">Not part of either point of view</string>
+    <string name="dual_view_pins">Dual view pins: where POV 1 starts, where POV 2 starts and where it ends</string>
+    <string name="dual_view_start_earlier">Start POV 1 a second earlier</string>
+    <string name="dual_view_start_later">Start POV 1 a second later</string>
+    <string name="dual_view_split_earlier">Start POV 2 a second earlier</string>
+    <string name="dual_view_split_later">Start POV 2 a second later</string>
+    <string name="dual_view_end_earlier">End POV 2 a second earlier</string>
+    <string name="dual_view_end_later">End POV 2 a second later</string>
+    <string name="dual_view_remove_cut">Remove the cut at %s</string>
 </resources>

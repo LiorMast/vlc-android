@@ -36,6 +36,7 @@ import org.videolan.libvlc.FactoryManager
 import org.videolan.libvlc.MediaPlayer
 import org.videolan.libvlc.interfaces.IMediaFactory
 import org.videolan.resources.VLCInstance
+import org.videolan.vlc.gui.video.dualview.DualViewSource
 import java.io.DataInputStream
 import java.io.DataOutputStream
 import java.io.File
@@ -66,7 +67,7 @@ class VlcAudioReader(private val context: Context, private val uri: Uri, private
         directory.mkdirs()
         val wav = File(directory, "$cacheKey.wav")
         val libVLC = VLCInstance.getInstance(context)
-        val media = mediaFactory.getFromUri(libVLC, uri)
+        val media = mediaFactory.getFromUri(libVLC, Uri.parse(DualViewSource.withLane(uri.toString(), DualViewSource.LANE_VLC_AUDIO)))
         media.addOption(":no-video")
         media.addOption(":no-spu")
         media.addOption(":no-sout-all")

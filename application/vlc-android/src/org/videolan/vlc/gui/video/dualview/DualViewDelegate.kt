@@ -35,12 +35,14 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 import org.videolan.libvlc.MediaPlayer
+import org.videolan.medialibrary.Tools
 import org.videolan.tools.Settings
 import org.videolan.vlc.PlaybackService
 import org.videolan.vlc.R
 import org.videolan.vlc.gui.video.VideoPlayerActivity
 import org.videolan.vlc.gui.video.dualview.audio.AudioSync
 import java.util.Locale
+import kotlin.math.abs
 import kotlin.math.roundToLong
 
 /**
@@ -49,7 +51,8 @@ import kotlin.math.roundToLong
  * other.
  *
  * The main player keeps playing the whole file as usual; a second player shows the moment
- * matching it in the other POV, and only the player showing the chosen POV is heard.
+ * matching it in the other POV, and only the player showing the chosen POV is heard. Its controls
+ * are part of the player: a button in the HUD, a bar above the seek bar, and pins on it.
  */
 class DualViewDelegate(private val activity: VideoPlayerActivity) : DualViewSync.Listener, DualViewWindow.Callback {
 
@@ -62,7 +65,10 @@ class DualViewDelegate(private val activity: VideoPlayerActivity) : DualViewSync
 
     sealed class Status {
         data class Reading(val progress: Float) : Status()
+        data class Matching(val progress: Float) : Status()
         data class Synced(val shift: Long) : Status()
+        data class CutFound(val at: Long, val shift: Long) : Status()
+        data class Scanned(val cuts: Int) : Status()
         object NoMatch : Status()
         object Unreadable : Status()
         object TooShort : Status()
@@ -71,8 +77,21 @@ class DualViewDelegate(private val activity: VideoPlayerActivity) : DualViewSync
     val state = MutableLiveData<State?>(null)
     val status = MutableLiveData<Status?>(null)
 
+    /**
+     * Whether the dual view bar is shown above the seek bar
+     */
+    val barOpen = MutableLiveData(false)
+
+    /**
+     * Whether the last automatic change can be undone
+     */
+    val canUndo = MutableLiveData(false)
+
     val isActive: Boolean
         get() = state.value != null
+
+    val isBarOpen: Boolean
+        get() = isActive && barOpen.value == true
 
     /**
      * The volume the user set, given to the player showing the audible POV
@@ -80,18 +99,16 @@ class DualViewDelegate(private val activity: VideoPlayerActivity) : DualViewSync
     var volume = 100
         private set
 
-    var syncOnSplitMiddle: Boolean
-        get() = store.syncOnSplitMiddle
-        set(value) {
-            store.syncOnSplitMiddle = value
-        }
-
     private val store by lazy(LazyThreadSafetyMode.NONE) { DualViewStore(activity) }
     private var player: DualViewPlayer? = null
     private var sync: DualViewSync? = null
     private var window: DualViewWindow? = null
     private var counterpartState = CounterpartState.PLAYING
     private var syncJob: Job? = null
+    // Kept for the video while it plays: holds the audio read so far
+    private var audioSync: AudioSync? = null
+    private var audioSyncLocation: Uri? = null
+    private var undoTimeline: DualViewTimeline? = null
     // Brought back once the main player plays the same video again
     private var restoreOnPlaying: State? = null
     // VLC doesn't report a new time after a seek while paused: remember where it went
@@ -99,8 +116,9 @@ class DualViewDelegate(private val activity: VideoPlayerActivity) : DualViewSync
     private var seekReported = -1L
     private val hideStatus = Runnable { window?.setStatus(null) }
     private var frameDuration = 0.0
-    // Offset the current run of nudges started from, and how many frames they moved it
+    // Offset the current run of nudges started from, its segment, and how many frames they moved it
     private var nudgeBase = 0L
+    private var nudgeSegment = -1
     private var nudges = 0
     // Where the paused main player was last moved to show its reported moment exactly
     private var alignedAt = -1L
@@ -115,18 +133,18 @@ class DualViewDelegate(private val activity: VideoPlayerActivity) : DualViewSync
     }
 
     /**
-     * The split saved for the current video, if any
+     * The timeline saved for the current video, if any
      */
-    fun savedSplit(): DualViewStore.Saved? {
+    fun savedTimeline(): SavedTimeline? {
         val service = activity.service ?: return null
         val location = service.currentMediaWrapper?.uri ?: return null
         return store.load(location, service.length)
     }
 
     fun resume() {
-        val saved = savedSplit() ?: return
-        val length = activity.service?.length ?: return
-        start(DualViewTimeline(length, saved.split, saved.offset), saved.audioPov)
+        val saved = savedTimeline() ?: return
+        start(saved.timeline, saved.audioPov)
+        barOpen.value = true
     }
 
     /**
@@ -145,17 +163,38 @@ class DualViewDelegate(private val activity: VideoPlayerActivity) : DualViewSync
             Toast.makeText(activity, R.string.dual_view_cant_split, Toast.LENGTH_SHORT).show()
             return
         }
-        val timeline = DualViewTimeline(length, time, time)
+        val timeline = DualViewTimeline.of(length, time, time)
         // Keep hearing what the main player shows, unless a POV was already chosen
-        start(timeline, state.value?.audioPov ?: timeline.povAt(currentMainTime()))
-        if (syncWithAudio) runAudioSync(AudioSync.Mode.WHOLE)
+        start(timeline, state.value?.audioPov ?: timeline.povAt(currentMainTime()).coerceAtLeast(1))
+        barOpen.value = true
+        if (syncWithAudio) runAudio { audio, timeline -> wholeSync(audio, timeline) }
+    }
+
+    fun toggleBar() {
+        barOpen.value = isActive && barOpen.value != true
     }
 
     /**
-     * Match the audio around the current moment to refine the offset
+     * Matches the audio around the current moment: refines the offset there, or finds the cut
+     * where it changed
      */
-    fun syncWithAudio() {
-        if (isActive) runAudioSync(AudioSync.Mode.AROUND)
+    fun syncHere() {
+        if (!isActive) return
+        val pov1Time = currentPov1Time()
+        runAudio { audio, timeline -> localSync(audio, timeline, pov1Time) }
+    }
+
+    /**
+     * Matches the audio along the whole video to find its cuts
+     */
+    fun scan() {
+        if (!isActive) return
+        runAudio { audio, timeline ->
+            when (val result = audio.scan(timeline, readingProgress(), { progress -> post { setStatus(Status.Matching(progress)) } })) {
+                is AudioSync.Result.Segments -> timeline.withSegments(result.segments) to Status.Scanned(result.segments.size - 1)
+                else -> null to failure(result)
+            }
+        }
     }
 
     fun cancelSync() {
@@ -165,18 +204,76 @@ class DualViewDelegate(private val activity: VideoPlayerActivity) : DualViewSync
     }
 
     /**
-     * Moves the moment shown in POV 2 by [frames] frames of the video
+     * Brings back the timeline from before the last automatic change
+     */
+    fun undo() {
+        val previous = undoTimeline ?: return
+        val current = state.value ?: return
+        setUndo(null)
+        setStatus(null)
+        if (previous.length == current.timeline.length) update(current.copy(timeline = previous))
+    }
+
+    /**
+     * Moves the moment shown in POV 2 by [frames] frames of the video, from the current moment's segment
      */
     fun nudge(frames: Int) {
         val current = state.value ?: return
+        val pov1Time = currentPov1Time()
+        val segment = current.timeline.segmentIndexAt(pov1Time)
+        val offset = current.timeline.offsetAt(pov1Time)
         val step = if (frameDuration > 0.0) frameDuration else DEFAULT_FRAME_MS
         // Count in whole frames from where the nudges started, so they don't drift by rounding
-        if (current.timeline.offset != nudgeBase + (nudges * step).roundToLong()) {
-            nudgeBase = current.timeline.offset
+        if (segment != nudgeSegment || offset != nudgeBase + (nudges * step).roundToLong()) {
+            nudgeBase = offset
+            nudgeSegment = segment
             nudges = 0
         }
         nudges += frames
-        update(current.copy(timeline = current.timeline.withOffset(nudgeBase + (nudges * step).roundToLong())))
+        edit(current.timeline.withOffsetAt(pov1Time, nudgeBase + (nudges * step).roundToLong()))
+    }
+
+    /**
+     * Sets the offset of the current moment's segment, saving it only when [persist]
+     */
+    fun setOffsetHere(offset: Long, persist: Boolean) {
+        val current = state.value ?: return
+        edit(current.timeline.withOffsetAt(currentPov1Time(), offset), persist)
+    }
+
+    /**
+     * Starts a new segment at the current moment, so offset changes only apply from here on
+     */
+    fun addCutHere() {
+        val current = state.value ?: return
+        val pov1Time = currentPov1Time()
+        if (pov1Time - current.timeline.start < DualViewTimeline.MIN_SEGMENT || current.timeline.split - pov1Time < DualViewTimeline.MIN_SEGMENT) return
+        edit(current.timeline.withCut(pov1Time, current.timeline.offsetAt(pov1Time)))
+        activity.overlayDelegate.showInfo(activity.getString(R.string.dual_view_cut_added), 1000)
+    }
+
+    fun moveCut(index: Int, at: Long) {
+        val current = state.value ?: return
+        edit(current.timeline.withCutMoved(index, at))
+    }
+
+    fun removeCut(index: Int) {
+        val current = state.value ?: return
+        edit(current.timeline.withoutCut(index))
+    }
+
+    /**
+     * Moves where POV 1 starts, where POV 2 starts and where it ends
+     */
+    fun setBounds(start: Long, split: Long, end: Long) {
+        val current = state.value ?: return
+        val timeline = current.timeline
+        if (start < 0 || end > timeline.length || !DualViewTimeline.canBound(start, split, end)) {
+            Toast.makeText(activity, R.string.dual_view_cant_split, Toast.LENGTH_SHORT).show()
+            update(current)
+            return
+        }
+        edit(timeline.withBounds(start, split, end))
     }
 
     /**
@@ -221,7 +318,11 @@ class DualViewDelegate(private val activity: VideoPlayerActivity) : DualViewSync
     fun close() {
         teardown()
         state.value = null
+        barOpen.value = false
         restoreOnPlaying = null
+        audioSync = null
+        audioSyncLocation = null
+        setUndo(null)
     }
 
     fun setVolume(volume: Int) {
@@ -229,14 +330,14 @@ class DualViewDelegate(private val activity: VideoPlayerActivity) : DualViewSync
         applyVolumes()
     }
 
-    /**
-     * @param detailed with advice, for the panel rather than the window
-     */
-    fun statusText(value: Status?, detailed: Boolean = false): String? = when (value) {
+    fun statusText(value: Status?): String? = when (value) {
         null -> null
         is Status.Reading -> if (value.progress >= 1F) activity.getString(R.string.dual_view_matching_audio)
         else activity.getString(R.string.dual_view_reading_audio, (value.progress * 100).toInt())
-        is Status.Synced -> activity.getString(if (detailed) R.string.dual_view_synced_hint else R.string.dual_view_synced, formatShift(value.shift))
+        is Status.Matching -> activity.getString(R.string.dual_view_scanning, (value.progress * 100).toInt())
+        is Status.Synced -> activity.getString(R.string.dual_view_synced, formatShift(value.shift))
+        is Status.CutFound -> activity.getString(R.string.dual_view_cut_found, Tools.millisToString(value.at), formatShift(value.shift))
+        is Status.Scanned -> activity.resources.getQuantityString(R.plurals.dual_view_scanned, value.cuts, value.cuts)
         Status.NoMatch -> activity.getString(R.string.dual_view_no_match)
         Status.Unreadable -> activity.getString(R.string.dual_view_unreadable)
         Status.TooShort -> activity.getString(R.string.dual_view_too_short)
@@ -251,6 +352,26 @@ class DualViewDelegate(private val activity: VideoPlayerActivity) : DualViewSync
         if (seekTarget >= 0 && reported == seekReported) return seekTarget
         seekTarget = -1L
         return reported
+    }
+
+    /**
+     * The POV 1 moment matching what the main player shows
+     */
+    fun currentPov1Time(): Long = state.value?.timeline?.pov1TimeAt(currentMainTime().coerceAtLeast(0L)) ?: 0L
+
+    fun isMainPlaying() = activity.service?.isPlaying == true
+
+    /**
+     * The audio read so far for the current video, for the waveform strips
+     */
+    fun audio(): AudioSync? = state.value?.let { audioFor(it) }
+
+    /**
+     * Seeks the main player to [time] to preview a pin being dragged, to the exact moment unless [fast]
+     */
+    fun preview(time: Long, fast: Boolean = true) {
+        val length = activity.service?.length ?: return
+        activity.seek(time.coerceIn(0L, length - 1), fromUser = true, fast = fast)
     }
 
     // Player hooks
@@ -352,7 +473,7 @@ class DualViewDelegate(private val activity: VideoPlayerActivity) : DualViewSync
         // The player takes a moment to open: aim a bit ahead when the main player is playing
         val startTime = if (counterpart.state == CounterpartState.PLAYING && service.isPlaying) counterpart.time + SyncController.OPEN_LEAD else counterpart.time
         var created: DualViewPlayer? = null
-        val newPlayer = DualViewPlayer(activity, playbackUri, startTime) { event -> if (created != null && created === player) onPlayerEvent(event) }
+        val newPlayer = DualViewPlayer(activity, playbackUri, location, startTime) { event -> if (created != null && created === player) onPlayerEvent(event) }
         created = newPlayer
         window.show(store.geometry)
         newPlayer.attach(window.videoLayout)
@@ -363,6 +484,7 @@ class DualViewDelegate(private val activity: VideoPlayerActivity) : DualViewSync
         sync = newSync
         counterpartState = counterpart.state
         val newState = State(location, playbackUri, timeline, audioPov, counterpart.pov)
+        if (audioSyncLocation != location) setUndo(null)
         state.value = newState
         updateWindow()
         applyVolumes()
@@ -422,13 +544,23 @@ class DualViewDelegate(private val activity: VideoPlayerActivity) : DualViewSync
         }
     }
 
-    private fun update(newState: State) {
+    /**
+     * A change the user made by hand: what was there before can't be brought back by undo anymore
+     */
+    private fun edit(timeline: DualViewTimeline, persist: Boolean = true) {
+        val current = state.value ?: return
+        if (timeline == current.timeline) return
+        if (persist) setUndo(null)
+        update(current.copy(timeline = timeline), persist)
+    }
+
+    private fun update(newState: State, persist: Boolean = true) {
         state.value = newState
         sync?.setTimeline(newState.timeline)
         sync?.setAudioPov(newState.audioPov)
         updateWindow()
         applyVolumes()
-        save(newState)
+        if (persist) save(newState)
     }
 
     /**
@@ -448,59 +580,106 @@ class DualViewDelegate(private val activity: VideoPlayerActivity) : DualViewSync
         window.setMessage(when (counterpartState) {
             CounterpartState.NOT_STARTED -> activity.getString(R.string.dual_view_not_started, current.windowPov)
             CounterpartState.ENDED -> activity.getString(R.string.dual_view_ended, current.windowPov)
+            CounterpartState.GAP -> activity.getString(R.string.dual_view_gap, current.windowPov)
+            CounterpartState.OUTSIDE -> activity.getString(R.string.dual_view_outside)
             CounterpartState.PLAYING -> null
         })
     }
 
-    private fun runAudioSync(mode: AudioSync.Mode) {
+    private fun audioFor(current: State): AudioSync {
+        audioSync?.takeIf { audioSyncLocation == current.location }?.let { return it }
+        val source = AudioSync.Source(current.playbackUri, current.location, "${DualViewStore.hash(current.location)}_${current.timeline.length}")
+        return AudioSync(activity.applicationContext, source, current.timeline.length).also {
+            audioSync = it
+            audioSyncLocation = current.location
+        }
+    }
+
+    /**
+     * Runs an audio search in the background: [search] gives the new timeline, if any, and the
+     * status to show. The timeline it changes can be brought back with [undo].
+     */
+    private fun runAudio(search: suspend (AudioSync, DualViewTimeline) -> Pair<DualViewTimeline?, Status>) {
         val current = state.value ?: return
         syncJob?.cancel()
-        val timeline = current.timeline
-        val mainTime = currentMainTime()
-        val pov1Time = if (timeline.povAt(mainTime) == 1) mainTime else mainTime - timeline.offset
-        val source = AudioSync.Source(current.playbackUri, current.location, "${DualViewStore.hash(current.location)}_${timeline.length}")
+        val audio = audioFor(current)
         setStatus(Status.Reading(0F))
         syncJob = activity.lifecycleScope.launch {
             // The player only keeps the screen on while playing: don't let it go off while the user waits
             activity.window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
-            val result = try {
-                AudioSync(activity.applicationContext).findOffset(source, timeline, mode, pov1Time) { progress ->
-                    activity.runOnUiThread { if (status.value is Status.Reading) setStatus(Status.Reading(progress)) }
-                }
+            val (timeline, newStatus) = try {
+                search(audio, current.timeline)
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
                 Log.e(TAG, "Audio sync failed", e)
-                AudioSync.Result.Unreadable
+                null to Status.Unreadable
             } finally {
                 activity.window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
             }
             val latest = state.value
             if (latest == null || latest.location != current.location) return@launch
             syncJob = null
-            setStatus(when (result) {
-                is AudioSync.Result.Found -> {
-                    update(latest.copy(timeline = latest.timeline.withOffset(result.offset)))
-                    Status.Synced(result.offset - latest.timeline.split)
-                }
-                AudioSync.Result.NoMatch -> Status.NoMatch
-                AudioSync.Result.TooShort -> Status.TooShort
-                AudioSync.Result.Unreadable -> Status.Unreadable
-            })
+            if (timeline != null && timeline.length == latest.timeline.length && timeline != latest.timeline) {
+                setUndo(latest.timeline)
+                update(latest.copy(timeline = timeline))
+            }
+            setStatus(newStatus)
         }
+    }
+
+    private suspend fun wholeSync(audio: AudioSync, timeline: DualViewTimeline): Pair<DualViewTimeline?, Status> =
+            when (val result = audio.findOffset(timeline, readingProgress())) {
+                is AudioSync.Result.Found -> timeline.withOffsetAt(timeline.start, result.offset) to Status.Synced(result.offset - timeline.split)
+                else -> null to failure(result)
+            }
+
+    /**
+     * Refines the offset at [pov1Time] when the audio agrees with it, else puts a cut where the
+     * new offset takes over
+     */
+    private suspend fun localSync(audio: AudioSync, timeline: DualViewTimeline, pov1Time: Long): Pair<DualViewTimeline?, Status> {
+        val result = audio.syncAt(timeline, pov1Time, readingProgress())
+        if (result !is AudioSync.Result.Found) return null to failure(result)
+        val offset = result.offset
+        val current = timeline.offsetAt(pov1Time)
+        val shift = offset - timeline.split
+        if (abs(offset - current) <= SAME_OFFSET) return timeline.withOffsetAt(pov1Time, offset) to Status.Synced(shift)
+        val segment = timeline.segments[timeline.segmentIndexAt(pov1Time)]
+        val from = maxOf(segment.from, pov1Time - CUT_SEARCH)
+        val cut = audio.findCut(timeline, from, minOf(pov1Time + CUT_SEARCH_AFTER, timeline.split), current, offset, readingProgress())
+        // The new offset explains the sounds all along: this segment's offset was off, there's no cut
+        if (cut == null || cut - from < DualViewTimeline.MIN_SEGMENT) return timeline.withOffsetAt(pov1Time, offset) to Status.Synced(shift)
+        return timeline.withCut(cut, offset) to Status.CutFound(cut, shift)
+    }
+
+    private fun failure(result: AudioSync.Result) = when (result) {
+        AudioSync.Result.TooShort -> Status.TooShort
+        AudioSync.Result.Unreadable -> Status.Unreadable
+        else -> Status.NoMatch
+    }
+
+    private fun readingProgress(): (Float) -> Unit = { progress -> post { if (status.value is Status.Reading) setStatus(Status.Reading(progress)) } }
+
+    private fun post(block: () -> Unit) = activity.runOnUiThread(block)
+
+    private fun setUndo(timeline: DualViewTimeline?) {
+        undoTimeline = timeline
+        if (canUndo.value != (timeline != null)) canUndo.value = timeline != null
     }
 
     private fun setStatus(value: Status?) {
         status.value = value
         val window = window ?: return
         window.removeCallbacks(hideStatus)
-        window.setStatus(statusText(value))
-        // Results only show for a moment in the window, the panel keeps them
-        if (value != null && value !is Status.Reading) window.postDelayed(hideStatus, STATUS_TIMEOUT)
+        // The bar shows the status while it's open
+        window.setStatus(if (isBarOpen) null else statusText(value))
+        // Results only show for a moment in the window, the bar keeps them
+        if (value != null && value !is Status.Reading && value !is Status.Matching) window.postDelayed(hideStatus, STATUS_TIMEOUT)
     }
 
     private fun save(current: State) {
-        store.save(current.location, DualViewStore.Saved(current.timeline.split, current.timeline.offset, current.audioPov, current.timeline.length))
+        store.save(current.location, SavedTimeline(current.timeline, current.audioPov))
     }
 
     private fun reportedMainTime() = try {
@@ -515,6 +694,11 @@ class DualViewDelegate(private val activity: VideoPlayerActivity) : DualViewSync
         private const val MIN_FRAME_MS = 8.0
         private const val MAX_FRAME_MS = 100.0
         private const val STATUS_TIMEOUT = 4_000L
+        // A local match this close to the offset there refines it rather than starting a segment
+        private const val SAME_OFFSET = 150L
+        // How far back, and ahead, of the moment synced a cut is looked for
+        private const val CUT_SEARCH = 120_000L
+        private const val CUT_SEARCH_AFTER = 7_500L
 
         fun formatShift(shift: Long): String = String.format(Locale.getDefault(), "%+.3f s", shift / 1000.0)
     }

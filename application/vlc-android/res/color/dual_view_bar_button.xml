@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Background of the dual view bar's buttons: tinted while checked -->
+<selector xmlns:android="http://schemas.android.com/apk/res/android">
+    <item android:color="#66FF8800" android:state_checked="true" />
+    <item android:color="@android:color/transparent" />
+</selector>

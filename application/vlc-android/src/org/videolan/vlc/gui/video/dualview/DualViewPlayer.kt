@@ -26,6 +26,9 @@ package org.videolan.vlc.gui.video.dualview
 
 import android.content.Context
 import android.net.Uri
+import android.os.ParcelFileDescriptor
+import android.util.Log
+import androidx.core.net.toUri
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import org.videolan.libvlc.FactoryManager
@@ -38,6 +41,7 @@ import org.videolan.resources.VLCOptions
 import org.videolan.tools.AppScope
 import org.videolan.tools.Settings
 import org.videolan.vlc.getVideoDisplayAspect
+import java.io.IOException
 import java.util.Locale
 
 /**
@@ -46,12 +50,21 @@ import java.util.Locale
  * Its controls can be called from any thread; [attach] and [release] from the main one.
  *
  * @param uri the address the main player plays
+ * @param location where the video is, as the media library knows it
  * @param startTime where to start, in ms
  * @param onEvent receives the player's events, on the main thread
  */
-class DualViewPlayer(context: Context, uri: Uri, startTime: Long, onEvent: (MediaPlayer.Event) -> Unit) {
+class DualViewPlayer(context: Context, uri: Uri, location: Uri, startTime: Long, onEvent: (MediaPlayer.Event) -> Unit) {
 
     private val player = MediaPlayer(VLCInstance.getInstance(context))
+    // A file another app shares is played through a descriptor: reading the main player's would
+    // move its position too, so this player opens the file again
+    private val descriptor: ParcelFileDescriptor? = if (uri.scheme == "fd" && location.scheme == "content") try {
+        context.contentResolver.openFileDescriptor(location, "r")
+    } catch (e: Exception) {
+        Log.w(TAG, "Can't open $location again", e)
+        null
+    } else null
 
     @Volatile
     var isReleased = false
@@ -65,7 +78,8 @@ class DualViewPlayer(context: Context, uri: Uri, startTime: Long, onEvent: (Medi
 
     init {
         val settings = Settings.getInstance(context)
-        val media = mediaFactory.getFromUri(VLCInstance.getInstance(context), uri)
+        val source = descriptor?.let { "fd://${it.fd}".toUri() } ?: DualViewSource.withLane(uri.toString(), DualViewSource.LANE_WINDOW).toUri()
+        val media = mediaFactory.getFromUri(VLCInstance.getInstance(context), source)
         media.addOption(String.format(Locale.US, ":start-time=%.3f", startTime / 1000.0))
         media.addOption(":no-spu")
         VLCOptions.setMediaOptions(media, context, MediaWrapper.MEDIA_VIDEO, false)
@@ -127,7 +141,13 @@ class DualViewPlayer(context: Context, uri: Uri, startTime: Long, onEvent: (Medi
         isReleased = true
         player.setEventListener(null)
         player.detachViews()
-        AppScope.launch(Dispatchers.IO) { player.release() }
+        AppScope.launch(Dispatchers.IO) {
+            player.release()
+            try {
+                descriptor?.close()
+            } catch (ignored: IOException) {
+            }
+        }
     }
 
     private fun guarded(block: () -> Unit) {
@@ -145,6 +165,7 @@ class DualViewPlayer(context: Context, uri: Uri, startTime: Long, onEvent: (Medi
     }
 
     companion object {
+        private const val TAG = "VLC/DualViewPlayer"
         private val mediaFactory = FactoryManager.getFactory(IMediaFactory.factoryId) as IMediaFactory
     }
 }

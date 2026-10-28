@@ -1,0 +1,188 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Dual view controls, above the seek bar while dual view is on -->
+<org.videolan.vlc.gui.video.dualview.DualViewBar xmlns:android="http://schemas.android.com/apk/res/android"
+        xmlns:app="http://schemas.android.com/apk/res-auto"
+        android:id="@+id/dual_view_bar"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:background="@drawable/dual_view_chip_background"
+        android:clickable="true"
+        android:focusable="false"
+        android:orientation="vertical"
+        android:padding="6dp">
+
+    <LinearLayout
+            android:id="@+id/dual_view_status_row"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:gravity="center_vertical"
+            android:orientation="horizontal"
+            android:paddingStart="6dp"
+            android:paddingEnd="6dp"
+            android:visibility="gone">
+
+        <ProgressBar
+                android:id="@+id/dual_view_status_progress"
+                android:layout_width="18dp"
+                android:layout_height="18dp"
+                android:layout_marginEnd="8dp" />
+
+        <TextView
+                android:id="@+id/dual_view_status_text"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:textColor="@color/white" />
+
+        <com.google.android.material.button.MaterialButton
+                android:id="@+id/dual_view_undo"
+                style="@style/DualViewBarButton"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="@string/dual_view_undo" />
+
+        <com.google.android.material.button.MaterialButton
+                android:id="@+id/dual_view_cancel"
+                style="@style/DualViewBarButton"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="@string/cancel" />
+    </LinearLayout>
+
+    <org.videolan.vlc.gui.video.dualview.DualViewWaveformView
+            android:id="@+id/dual_view_waveform"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginBottom="4dp"
+            android:contentDescription="@string/dual_view_waveform_description"
+            android:visibility="gone" />
+
+    <HorizontalScrollView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:fillViewport="true"
+            android:scrollbars="none">
+
+        <LinearLayout
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:gravity="center_vertical"
+                android:orientation="horizontal">
+
+            <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginStart="6dp"
+                    android:layout_marginEnd="4dp"
+                    android:text="@string/dual_view_audio"
+                    android:textColor="@color/white" />
+
+            <com.google.android.material.button.MaterialButtonToggleGroup
+                    android:id="@+id/dual_view_audio_pov"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    app:selectionRequired="true"
+                    app:singleSelection="true">
+
+                <com.google.android.material.button.MaterialButton
+                        android:id="@+id/dual_view_audio_pov1"
+                        style="@style/DualViewBarToggle"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content" />
+
+                <com.google.android.material.button.MaterialButton
+                        android:id="@+id/dual_view_audio_pov2"
+                        style="@style/DualViewBarToggle"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content" />
+            </com.google.android.material.button.MaterialButtonToggleGroup>
+
+            <androidx.appcompat.widget.AppCompatImageView
+                    android:id="@+id/dual_view_offset_minus"
+                    android:layout_width="40dp"
+                    android:layout_height="40dp"
+                    android:layout_marginStart="12dp"
+                    android:background="?attr/selectableItemBackgroundBorderless"
+                    android:contentDescription="@string/dual_view_offset_decrease"
+                    android:focusable="true"
+                    android:padding="8dp"
+                    app:srcCompat="@drawable/ic_chevron_left" />
+
+            <TextView
+                    android:id="@+id/dual_view_offset_value"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:gravity="center"
+                    android:minWidth="88dp"
+                    android:textColor="@color/white"
+                    android:textStyle="bold" />
+
+            <androidx.appcompat.widget.AppCompatImageView
+                    android:id="@+id/dual_view_offset_plus"
+                    android:layout_width="40dp"
+                    android:layout_height="40dp"
+                    android:background="?attr/selectableItemBackgroundBorderless"
+                    android:contentDescription="@string/dual_view_offset_increase"
+                    android:focusable="true"
+                    android:padding="8dp"
+                    app:srcCompat="@drawable/ic_chevron_right" />
+
+            <com.google.android.material.button.MaterialButton
+                    android:id="@+id/dual_view_sync_here"
+                    style="@style/DualViewBarButton"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginStart="8dp"
+                    android:text="@string/dual_view_sync_here" />
+
+            <com.google.android.material.button.MaterialButton
+                    android:id="@+id/dual_view_waveform_toggle"
+                    style="@style/DualViewBarButton"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:checkable="true"
+                    android:text="@string/dual_view_waveform" />
+
+            <com.google.android.material.button.MaterialButton
+                    android:id="@+id/dual_view_overlay_toggle"
+                    style="@style/DualViewBarButton"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:checkable="true"
+                    android:text="@string/dual_view_overlay"
+                    android:visibility="gone" />
+
+            <com.google.android.material.button.MaterialButton
+                    android:id="@+id/dual_view_cut_here"
+                    style="@style/DualViewBarButton"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="@string/dual_view_cut_here" />
+
+            <com.google.android.material.button.MaterialButton
+                    android:id="@+id/dual_view_scan"
+                    style="@style/DualViewBarButton"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="@string/dual_view_scan" />
+
+            <com.google.android.material.button.MaterialButton
+                    android:id="@+id/dual_view_swap_views"
+                    style="@style/DualViewBarButton"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="@string/dual_view_swap" />
+
+            <androidx.appcompat.widget.AppCompatImageView
+                    android:id="@+id/dual_view_turn_off"
+                    android:layout_width="40dp"
+                    android:layout_height="40dp"
+                    android:layout_marginStart="4dp"
+                    android:background="?attr/selectableItemBackgroundBorderless"
+                    android:contentDescription="@string/dual_view_turn_off"
+                    android:focusable="true"
+                    android:padding="10dp"
+                    app:srcCompat="@drawable/ic_dual_view_close" />
+        </LinearLayout>
+    </HorizontalScrollView>
+</org.videolan.vlc.gui.video.dualview.DualViewBar>

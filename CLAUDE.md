@@ -53,22 +53,27 @@ This is a personal fork of VLC for Android (`origin` = LiorMast/vlc-android, `up
 
 **Dual view** (`gui/video/dualview/`, this fork's feature) plays the two halves of a video holding two POVs at once.
 - **Players:** the main player plays the whole file as usual. A second LibVLC `MediaPlayer` (`DualViewPlayer`, TextureView) shows the matching moment in a floating in-app window, `DualViewWindow`.
-- **Timeline and sync:**
-  - `DualViewTimeline` does the split/offset maths.
+- **Timeline:** `DualViewTimeline` holds POV 1 = `[start, split)`, POV 2 = `[split, end)` and a list of `Segment`s, each giving the offset from one POV 1 moment on (cuts in the recordings change it). Mapping POV 2 back can find no POV 1 moment (`GAP`) or several (the latest segment wins).
+- **Sync:**
   - `SyncController` holds the correction logic, and `DualViewSync` samples both players every 10 ms on its own thread.
   - Both of those work from VLC 3's coarse time (refreshed every 250 ms, and ahead of the picture right after a start or seek).
+  - Crossing a cut, or an edit that moves the matching moment far, seeks the window at once.
 - **Paused view:** while paused, seeks aim at mid-frame (`SyncController.midFrame`), because VLC shows the frame about 9 ms before a seek target.
 - **Audio sync** (`audio/`):
-  - Envelopes: a 500 Hz high-passed loudness envelope at 10 ms steps.
-  - Matching: GCC-PHAT across windows, accepted at a peak ≥ 6σ and ≥ 2× the runner-up.
-  - Readers: `AndroidAudioReader` (MediaCodec, parallel chunks) for local and HTTP sources; `VlcAudioReader` (a transcode to WAV from the file start, cached in `cacheDir/dual_view`) for network shares.
-  - Accuracy: results are typically one frame off the pictures, because each camera's mic hears sounds at slightly different times. The panel's offset buttons step one frame.
-- **Persistence:** `DualViewStore`, its own SharedPreferences file `dual_view`.
+  - Envelopes: a 500 Hz high-passed loudness envelope at 10 ms steps, kept per video in `AudioEnvelopeCache` (shared by sync, scan and the waveform strips).
+  - Matching: GCC-PHAT, accepted at a peak ≥ 6σ and ≥ 2× the runner-up. "Sync here" matches 15 s around the moment (±30 s, then all of POV 2); `CutFinder` places a cut where the old offset gives way to the new one, and its scan does that along the whole video.
+  - Readers: `AndroidAudioReader` (MediaCodec, 4 parallel chunks) for local, `content://` and HTTP sources; `VlcAudioReader` (a transcode to WAV from the file start, cached in `cacheDir/dual_view`) for network shares.
+  - Accuracy: results are typically one frame off the pictures, because each camera's mic hears sounds at slightly different times. The offset buttons step one frame.
+- **Controls:** a HUD button (menu to start, then shows/hides the bar), `DualViewBar` above the seek bar (keeps the HUD up while open), `DualViewWaveformView` (drag a strip to change the current segment's offset live) and `DualViewPinsView` (drag start/split/end pins and cut ticks).
+- **Other apps' files** (`DualViewSource`):
+  - Nova Video Player hands network files over as `http://localhost:<port>/…` through a proxy that drops an older connection when a new one arrives. Its patched `StreamOverHttp` only does so within a `?lane=` tag, which every extra dual view stream adds. The port changes per launch, so keys drop it.
+  - A shared `content://` file plays as `fd://N`: `DualViewPlayer` opens its own descriptor, since two readers of one fd share its position.
+- **Persistence:** `DualViewStore`, its own SharedPreferences file `dual_view`; `SavedTimelineCodec` writes `v2;…` and still reads the single-offset format.
 - **Integration points:**
   - `VideoPlayerActivity`: `dualViewDelegate`, event forwarding, the seek hook `mainSeekTarget`, and `setPlayerVolume`/`playerVolume` for volume routing.
-  - `PlayerOptionsDelegate`: the `ID_DUAL_VIEW` entry.
+  - `VideoPlayerOverlayDelegate`: `initDualView` (button, pins, bar) and the infinite HUD timeout while the bar is open.
   - `player.xml`: the `dual_view_stub` view stub.
-  - `player_hud.xml`: the split marker.
+  - `player_hud.xml`: `dual_view_toggle`, `dual_view_pins` and `dual_view_bar_stub`.
 
 ## Device testing over adb.exe
 
@@ -77,3 +82,4 @@ This is a personal fork of VLC for Android (`origin` = LiorMast/vlc-android, `up
 - **Don't press Back to close sheets.** If the sheet isn't actually open, Back exits the player.
 - **Controls auto-hide** within the ~2 s a `uiautomator dump` takes, so tap known coordinates right after confirming they're visible.
 - **Logs:** `adb.exe logcat -s VLC/DualView VLC/DualViewAudioSync`. Test videos are in `/sdcard/Movies/DualViewTest/`.
+- **Popups** (the dual view menu, cut removal) take focus as `PopupWindow:…`: guard those taps on `mFocusedApp` instead. The HUD hides after a few seconds and closes the menu, so show the HUD, open the menu and pick an item in one quick sequence.

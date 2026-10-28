@@ -31,10 +31,14 @@ import android.os.SystemClock
 import android.util.Log
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.withContext
 import org.videolan.vlc.BuildConfig
 import org.videolan.vlc.gui.video.dualview.DualViewTimeline
+import org.videolan.vlc.gui.video.dualview.Segment
 import java.io.IOException
+import kotlin.coroutines.coroutineContext
 
 private const val TAG = "VLC/DualViewAudioSync"
 
@@ -50,9 +54,12 @@ interface AudioEnvelopeSource {
 }
 
 /**
- * Finds how far apart the two POVs of a video are by matching their audio
+ * Finds how far apart the two POVs of a video are by matching their audio. One instance serves
+ * one video: what it reads is kept for the next searches.
+ *
+ * @param length the video's length, in ms
  */
-class AudioSync(private val context: Context) {
+class AudioSync(context: Context, source: Source, length: Long) {
 
     /**
      * @param playbackUri the address VLC plays
@@ -61,119 +68,166 @@ class AudioSync(private val context: Context) {
      */
     class Source(val playbackUri: Uri, val locationUri: Uri, val cacheKey: String)
 
-    enum class Mode {
-        /**
-         * Compare several stretches across POV 1, searching widely: the split is only a guess
-         */
-        WHOLE,
-
-        /**
-         * Compare the audio around one moment, searching near the current offset
-         */
-        AROUND
-    }
-
     sealed class Result {
         data class Found(val offset: Long, val score: Float) : Result()
+        data class Segments(val segments: List<Segment>) : Result()
         object NoMatch : Result()
         object TooShort : Result()
         object Unreadable : Result()
     }
 
     /**
-     * @param pov1Time moment of POV 1 to match around, for [Mode.AROUND]
+     * The audio read so far, for the waveform strips too
+     */
+    val cache = AudioEnvelopeCache(VideoAudio(context.applicationContext, source, length))
+
+    /**
+     * Compares several stretches across POV 1 with POV 2, searching widely around the timeline's
+     * first offset: the split is only a guess
+     *
      * @param onReading called with the fraction of audio read so far, possibly from another thread
      */
-    suspend fun findOffset(source: Source, timeline: DualViewTimeline, mode: Mode, pov1Time: Long, onReading: (Float) -> Unit): Result {
-        val base = snap(timeline.offset)
-        val length = timeline.length
+    suspend fun findOffset(timeline: DualViewTimeline, onReading: (Float) -> Unit): Result = guarded {
+        val base = snap(timeline.segments[0].offset)
+        val start = timeline.start
         val split = timeline.split
-        val window = snap(when (mode) {
-            Mode.WHOLE -> minOf(WHOLE_WINDOW, split / 4)
-            Mode.AROUND -> minOf(AROUND_WINDOW, split / 2, (length - split) / 2)
-        })
-        val searched = snap(when (mode) {
-            Mode.WHOLE -> maxOf(MIN_WHOLE_RANGE, length / 20).coerceAtMost(MAX_WHOLE_RANGE)
-            Mode.AROUND -> AROUND_RANGE
-        })
-        if (window < MIN_WINDOW) return Result.TooShort
-        val centers = when (mode) {
-            Mode.WHOLE -> {
-                // Spread the windows where every offset searched stays inside POV 2
-                val first = maxOf(0L, split + searched - base)
-                val last = minOf(split - window, length - base - window - searched)
-                if (last > first) listOf(1, 3, 5).map { first + (last - first) * it / 6 + window / 2 }
-                else listOf(split / 4, split / 2, split * 3 / 4)
-            }
-            Mode.AROUND -> listOf(pov1Time)
-        }
-        // Pairs of [start, end) stretches: one of POV 1, and where to look for it in POV 2
-        val ranges = centers.flatMap { center ->
-            val pov1Start = snap((center - window / 2).coerceIn(0L, split - window))
-            // Stay on the step grid: the first step of POV 2 starts at or after the split
+        val window = snap(minOf(WHOLE_WINDOW, (split - start) / 4))
+        val searched = snap(maxOf(MIN_WHOLE_RANGE, timeline.length / 20).coerceAtMost(MAX_WHOLE_RANGE))
+        if (window < MIN_WINDOW) return@guarded Result.TooShort
+        // Spread the windows where every offset searched stays inside POV 2
+        val first = maxOf(start, timeline.split + searched - base)
+        val last = minOf(split - window, timeline.end - base - window - searched)
+        val starts = (if (last > first) listOf(1, 3, 5).map { first + (last - first) * it / 6 }
+        else listOf(1, 2, 3).map { start + (split - start) * it / 4 - window / 2 }).map { snap(it.coerceIn(start, split - window)) }
+        val ranges = starts.flatMap { pov1Start ->
             val pov2Start = maxOf(pov1Start + base - searched, ceil(split))
-            val pov2End = minOf(pov1Start + base + window + searched, snap(length))
-            if (pov2End - pov2Start < window + MIN_SEARCH) emptyList<LongRange>() else listOf(pov1Start..pov1Start + window, pov2Start..pov2End)
+            val pov2End = minOf(pov1Start + base + window + searched, snap(timeline.end))
+            if (pov2End - pov2Start < window + CutFinder.MIN_SEARCH) emptyList() else listOf(pov1Start..pov1Start + window, pov2Start..pov2End)
         }
-        if (ranges.isEmpty()) return Result.TooShort
-        val started = SystemClock.elapsedRealtime()
-        // The windows' stretches overlap: read each moment once
-        val merged = merge(ranges)
-        val mergedEnvelopes = read(source, length, merged, onReading) ?: return Result.Unreadable
-        val envelopes = ranges.map { range -> mergedEnvelopes[merged.indexOfFirst { it.first <= range.first && range.last <= it.last }].slice(range.first, range.last) }
-        val readAt = SystemClock.elapsedRealtime()
+        if (ranges.isEmpty()) return@guarded Result.TooShort
+        val envelopes = cache.get(ranges, onReading)
         val match = withContext(Dispatchers.Default) {
-            val windows = envelopes.chunked(2).map { AudioOffsetMatcher.Window(it[0], it[1]) }
-            AudioOffsetMatcher.match(windows, base, searched)
+            AudioOffsetMatcher.match(envelopes.chunked(2).map { AudioOffsetMatcher.Window(it[0], it[1]) }, base, searched)
         }
-        if (BuildConfig.DEBUG) Log.d(TAG, "Audio match in $mode around $base ±$searched ms: $match. " +
-                "Read ${merged.sumOf { it.last - it.first } / 1000} s of audio in ${readAt - started} ms, matched in ${SystemClock.elapsedRealtime() - readAt} ms")
-        return if (match != null && match.accepted) Result.Found(match.offsetMs, match.score) else Result.NoMatch
-    }
-
-    private suspend fun read(source: Source, length: Long, ranges: List<LongRange>, onReading: (Float) -> Unit): List<AudioEnvelope>? {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP && AndroidAudioReader.canRead(source.locationUri)) try {
-            return AndroidAudioReader(context, source.locationUri).read(ranges, onReading)
-        } catch (e: IOException) {
-            Log.w(TAG, "Android can't read this audio, trying VLC", e)
-        }
-        return try {
-            VlcAudioReader(context, source.playbackUri, source.cacheKey, length).read(ranges, onReading)
-        } catch (e: CancellationException) {
-            throw e
-        } catch (e: IOException) {
-            Log.w(TAG, "VLC can't read this audio", e)
-            null
-        } catch (e: IllegalStateException) {
-            Log.w(TAG, "VLC can't read this audio", e)
-            null
-        }
+        log("whole file around $base ±$searched ms: $match")
+        if (match != null && match.accepted) Result.Found(match.offsetMs, match.score) else Result.NoMatch
     }
 
     /**
-     * [ranges] with the overlapping ones joined, in order
+     * Matches the [LOCAL_WINDOW] of POV 1 around [pov1Time], near the offset the timeline has there,
+     * then across all of POV 2 if that fails: after a cut the offset can be anything
      */
-    private fun merge(ranges: List<LongRange>): List<LongRange> {
-        val merged = ArrayList<LongRange>()
-        for (range in ranges.sortedBy { it.first }) {
-            val last = merged.lastOrNull()
-            if (last != null && range.first <= last.last) merged[merged.size - 1] = last.first..maxOf(last.last, range.last)
-            else merged.add(range)
-        }
-        return merged
+    suspend fun syncAt(timeline: DualViewTimeline, pov1Time: Long, onReading: (Float) -> Unit): Result = guarded {
+        val window = snap(minOf(LOCAL_WINDOW, timeline.split - timeline.start, timeline.end - timeline.split))
+        if (window < MIN_WINDOW) return@guarded Result.TooShort
+        val from = snap((pov1Time - window / 2).coerceIn(timeline.start, timeline.split - window))
+        val base = timeline.offsetAt(pov1Time)
+        val local = matchAround(timeline, from, window, base, CutFinder.LOCAL_RANGE, onReading)
+        if (local != null && local.accepted) return@guarded Result.Found(local.offsetMs, local.score)
+        val range = CutFinder.wholeRange(from, window, base, timeline.split, timeline.end)
+        val wide = matchAround(timeline, from, window, base, range, onReading)
+        if (wide != null && wide.accepted) Result.Found(wide.offsetMs, wide.score) else Result.NoMatch
     }
 
-    private fun snap(time: Long) = time.floorDiv(AudioEnvelope.HOP_MS) * AudioEnvelope.HOP_MS
+    /**
+     * Where, in POV 1 between [from] and [to], [oldOffset] gives way to [newOffset]
+     */
+    suspend fun findCut(timeline: DualViewTimeline, from: Long, to: Long, oldOffset: Long, newOffset: Long, onReading: (Float) -> Unit): Long? = try {
+        val pov1 = snap(from)..ceil(to)
+        val low = minOf(oldOffset, newOffset)
+        val high = maxOf(oldOffset, newOffset)
+        val pov2 = maxOf(ceil(timeline.split), snap(pov1.first + low - CUT_MARGIN))..minOf(snap(timeline.end), ceil(pov1.last + high + CUT_MARGIN))
+        if (pov2.last <= pov2.first) null
+        else {
+            val (pov1Envelope, pov2Envelope) = cache.get(listOf(pov1, pov2), onReading)
+            withContext(Dispatchers.Default) { CutFinder.findCut(pov1Envelope, pov2Envelope, oldOffset, newOffset) }
+        }
+    } catch (e: CancellationException) {
+        throw e
+    } catch (e: Exception) {
+        Log.w(TAG, "Can't read the audio to find the cut", e)
+        null
+    }
 
-    private fun ceil(time: Long) = snap(time + AudioEnvelope.HOP_MS - 1)
+    /**
+     * Finds the segments of the whole video
+     *
+     * @param onReading called with the fraction of audio read so far, then of the video matched
+     */
+    suspend fun scan(timeline: DualViewTimeline, onReading: (Float) -> Unit, onMatching: (Float) -> Unit): Result = guarded {
+        val pov1 = ceil(timeline.start)..snap(timeline.split)
+        val pov2 = ceil(timeline.split)..snap(timeline.end)
+        val (pov1Envelope, pov2Envelope) = cache.get(listOf(pov1, pov2), onReading)
+        val segments = withContext(Dispatchers.Default) {
+            CutFinder.scan(pov1Envelope, pov2Envelope, timeline.start, timeline.split, timeline.end, timeline.segments[0].offset, onMatching) { isActive }
+        }
+        coroutineContext.ensureActive()
+        log("scan: $segments")
+        if (segments == null) Result.NoMatch else Result.Segments(segments)
+    }
+
+    private suspend fun matchAround(timeline: DualViewTimeline, from: Long, window: Long, base: Long, searched: Long, onReading: (Float) -> Unit): AudioOffsetMatcher.Match? {
+        val pov2 = maxOf(ceil(timeline.split), snap(from + base - searched))..minOf(snap(timeline.end), ceil(from + base + window + searched))
+        if (pov2.last - pov2.first < window + CutFinder.MIN_SEARCH) return null
+        val started = SystemClock.elapsedRealtime()
+        val (pov1Envelope, pov2Envelope) = cache.get(listOf(from..from + window, pov2), onReading)
+        val readAt = SystemClock.elapsedRealtime()
+        val match = withContext(Dispatchers.Default) {
+            CutFinder.matchWindow(pov1Envelope, pov2Envelope, from, window, base, searched, timeline.split, timeline.end)
+        }
+        log("around $from: $base ±$searched ms: $match. Read in ${readAt - started} ms, matched in ${SystemClock.elapsedRealtime() - readAt} ms")
+        return match
+    }
+
+    /**
+     * Runs [block], an audio that can't be read giving [Result.Unreadable]
+     */
+    private suspend fun guarded(block: suspend () -> Result): Result = try {
+        block()
+    } catch (e: CancellationException) {
+        throw e
+    } catch (e: IOException) {
+        Log.w(TAG, "Can't read this audio", e)
+        Result.Unreadable
+    } catch (e: IllegalStateException) {
+        Log.w(TAG, "Can't read this audio", e)
+        Result.Unreadable
+    }
+
+    private fun log(message: String) {
+        if (BuildConfig.DEBUG) Log.d(TAG, "Audio match $message")
+    }
+
+    private fun snap(time: Long) = CutFinder.snap(time)
+
+    private fun ceil(time: Long) = CutFinder.ceil(time)
 
     companion object {
         private const val WHOLE_WINDOW = 20_000L
         private const val MIN_WHOLE_RANGE = 30_000L
         private const val MAX_WHOLE_RANGE = 120_000L
-        private const val AROUND_WINDOW = 30_000L
-        private const val AROUND_RANGE = 30_000L
+        private const val LOCAL_WINDOW = 15_000L
         private const val MIN_WINDOW = 3_000L
-        private const val MIN_SEARCH = 1_000L
+        // POV 2 audio read around both offsets' stretches when looking for a cut
+        private const val CUT_MARGIN = 1_000L
+    }
+}
+
+/**
+ * A video's audio, read by Android when it can, else by VLC
+ */
+private class VideoAudio(private val context: Context, private val source: AudioSync.Source, private val length: Long) : AudioEnvelopeSource {
+
+    @Volatile
+    private var androidFailed = false
+
+    override suspend fun read(ranges: List<LongRange>, progress: (Float) -> Unit): List<AudioEnvelope> {
+        if (!androidFailed && Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP && AndroidAudioReader.canRead(source.locationUri)) try {
+            return AndroidAudioReader(context, source.locationUri).read(ranges, progress)
+        } catch (e: IOException) {
+            Log.w(TAG, "Android can't read this audio, trying VLC", e)
+            androidFailed = true
+        }
+        return VlcAudioReader(context, source.playbackUri, source.cacheKey, length).read(ranges, progress)
     }
 }
