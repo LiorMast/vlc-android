@@ -30,9 +30,11 @@ import android.util.AttributeSet
 import android.view.View
 import android.widget.LinearLayout
 import android.widget.TextView
+import androidx.appcompat.widget.PopupMenu
 import androidx.lifecycle.LifecycleOwner
 import com.google.android.material.button.MaterialButton
 import com.google.android.material.button.MaterialButtonToggleGroup
+import org.videolan.medialibrary.Tools
 import org.videolan.vlc.R
 import org.videolan.vlc.gui.helpers.OnRepeatListenerKey
 import org.videolan.vlc.gui.helpers.OnRepeatListenerTouch
@@ -104,6 +106,7 @@ class DualViewBar @JvmOverloads constructor(context: Context, attrs: AttributeSe
         findViewById<View>(R.id.dual_view_cut_here).setOnClickListener { delegate.addCutHere() }
         findViewById<View>(R.id.dual_view_swap_views).setOnClickListener { delegate.swap() }
         findViewById<View>(R.id.dual_view_turn_off).setOnClickListener { delegate.close() }
+        findViewById<View>(R.id.dual_view_more).setOnClickListener { showMenu(it) }
         undo.setOnClickListener { delegate.undo() }
         cancel.setOnClickListener { delegate.cancelSync() }
         waveformToggle.addOnCheckedChangeListener { _, checked ->
@@ -114,6 +117,7 @@ class DualViewBar @JvmOverloads constructor(context: Context, attrs: AttributeSe
         delegate.state.observe(owner) { updateState(it) }
         delegate.status.observe(owner) { updateStatus() }
         delegate.canUndo.observe(owner) { updateStatus() }
+        delegate.audioProgress.observe(owner) { updateStatus() }
     }
 
     override fun onAttachedToWindow() {
@@ -151,16 +155,55 @@ class DualViewBar @JvmOverloads constructor(context: Context, attrs: AttributeSe
         val status = delegate.status.value
         val working = status is DualViewDelegate.Status.Reading || status is DualViewDelegate.Status.Matching
         val canUndo = delegate.canUndo.value == true && !working
-        statusRow.visibility = if (status == null && !canUndo) View.GONE else View.VISIBLE
-        statusText.text = delegate.statusText(status) ?: ""
-        statusProgress.visibility = if (working) View.VISIBLE else View.GONE
+        // Reading the audio ahead shows when nothing else does
+        val loading = delegate.audioProgress.value?.takeIf { status == null && !canUndo }
+        statusRow.visibility = if (status == null && !canUndo && loading == null) View.GONE else View.VISIBLE
+        statusText.text = delegate.statusText(status)
+                ?: loading?.let { context.getString(R.string.dual_view_loading_audio, (it * 100).toInt()) } ?: ""
+        statusProgress.visibility = if (working || loading != null) View.VISIBLE else View.GONE
         cancel.visibility = if (working) View.VISIBLE else View.GONE
         undo.visibility = if (canUndo) View.VISIBLE else View.GONE
         syncHere.isEnabled = !working
         scan.isEnabled = !working
     }
 
+    /**
+     * Starting over: the other ways to split, and the saved timeline when it isn't the current one
+     */
+    private fun showMenu(anchor: View) {
+        val delegate = delegate ?: return
+        val length = delegate.state.value?.timeline?.length ?: return
+        val saved = delegate.savedTimeline()?.takeIf { it.timeline != delegate.state.value?.timeline }
+        PopupMenu(context, anchor).apply {
+            if (saved != null) {
+                val timeline = saved.timeline
+                val split = Tools.millisToString(timeline.split)
+                val shift = DualViewDelegate.formatShift(timeline.segments[0].offset - timeline.split)
+                val cuts = timeline.segments.size - 1
+                menu.add(0, RESUME, 0, if (cuts == 0) context.getString(R.string.dual_view_resume, split, shift)
+                else context.resources.getQuantityString(R.plurals.dual_view_resume_cuts, cuts, split, shift, cuts))
+            }
+            menu.add(0, SPLIT_NOW, 1, context.getString(R.string.dual_view_split_here, Tools.millisToString(delegate.currentMainTime().coerceAtLeast(0L))))
+            menu.add(0, SPLIT_MIDDLE, 2, context.getString(R.string.dual_view_split_middle_at, Tools.millisToString(length / 2)))
+            menu.add(0, SPLIT_MIDDLE_SYNC, 3, R.string.dual_view_split_middle_sync)
+            setOnMenuItemClickListener { item ->
+                when (item.itemId) {
+                    RESUME -> delegate.resume()
+                    SPLIT_NOW -> delegate.splitNow()
+                    SPLIT_MIDDLE -> delegate.splitMiddle(false)
+                    SPLIT_MIDDLE_SYNC -> delegate.splitMiddle(true)
+                }
+                true
+            }
+            show()
+        }
+    }
+
     companion object {
+        private const val RESUME = 1
+        private const val SPLIT_NOW = 2
+        private const val SPLIT_MIDDLE = 3
+        private const val SPLIT_MIDDLE_SYNC = 4
         private const val OFFSET_REFRESH = 500L
     }
 }

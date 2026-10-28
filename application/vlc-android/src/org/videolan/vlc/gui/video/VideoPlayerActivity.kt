@@ -1033,7 +1033,7 @@ open class VideoPlayerActivity : AppCompatActivity(), PlaybackService.Callback, 
             onCleared()
         }
         optionsDelegate = null
-        dualView?.close()
+        dualView?.release()
         overlayDelegate.onDestroy()
 
         // Dismiss the presentation when the activity is not visible.

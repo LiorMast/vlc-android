@@ -38,6 +38,7 @@ import org.videolan.vlc.BuildConfig
 import org.videolan.vlc.gui.video.dualview.DualViewTimeline
 import org.videolan.vlc.gui.video.dualview.Segment
 import java.io.IOException
+import kotlin.math.abs
 import kotlin.coroutines.coroutineContext
 
 private const val TAG = "VLC/DualViewAudioSync"
@@ -59,7 +60,7 @@ interface AudioEnvelopeSource {
  *
  * @param length the video's length, in ms
  */
-class AudioSync(context: Context, source: Source, length: Long) {
+class AudioSync(context: Context, source: Source, private val length: Long) {
 
     /**
      * @param playbackUri the address VLC plays
@@ -166,6 +167,37 @@ class AudioSync(context: Context, source: Source, length: Long) {
         if (segments == null) Result.NoMatch else Result.Segments(segments)
     }
 
+    /**
+     * Reads all of the video's audio into [cache] a block at a time, from the one holding [around]
+     * outwards, so what's near the current moment comes first. Features asking for audio meanwhile
+     * get in between blocks and read only what's still missing.
+     *
+     * @param onProgress the fraction of the audio read so far
+     * @return whether all of it could be read
+     */
+    suspend fun prefetch(around: Long, onProgress: (Float) -> Unit): Boolean {
+        val whole = 0L..snap(length)
+        if (whole.last <= 0) return false
+        val count = ((whole.last + PREFETCH_BLOCK - 1) / PREFETCH_BLOCK).toInt()
+        val first = (around.coerceIn(0L, whole.last - 1) / PREFETCH_BLOCK).toInt()
+        // first, first + 1, first - 1, first + 2...
+        val order = (0 until count).sortedBy { abs(it - first) * 2 - if (it > first) 1 else 0 }
+        for (index in order) {
+            val block = index * PREFETCH_BLOCK..minOf((index + 1) * PREFETCH_BLOCK, whole.last)
+            if (!cache.has(block)) try {
+                cache.get(listOf(block))
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                // Unreadable: the features asking for audio say so
+                Log.w(TAG, "Can't read the audio ahead", e)
+                return false
+            }
+            onProgress(cache.covered(whole).toFloat() / (whole.last - whole.first))
+        }
+        return true
+    }
+
     private suspend fun matchAround(timeline: DualViewTimeline, from: Long, window: Long, base: Long, searched: Long, onReading: (Float) -> Unit): AudioOffsetMatcher.Match? {
         val pov2 = maxOf(ceil(timeline.split), snap(from + base - searched))..minOf(snap(timeline.end), ceil(from + base + window + searched))
         if (pov2.last - pov2.first < window + CutFinder.MIN_SEARCH) return null
@@ -210,6 +242,8 @@ class AudioSync(context: Context, source: Source, length: Long) {
         private const val MIN_WINDOW = 3_000L
         // POV 2 audio read around both offsets' stretches when looking for a cut
         private const val CUT_MARGIN = 1_000L
+        // Read ahead a minute at a time: AndroidAudioReader decodes 4 chunks of 15 s at once
+        private const val PREFETCH_BLOCK = 60_000L
     }
 }
 

@@ -43,7 +43,6 @@ import android.widget.ImageView
 import android.widget.TextView
 import androidx.annotation.StringRes
 import androidx.appcompat.content.res.AppCompatResources
-import androidx.appcompat.widget.PopupMenu
 import androidx.appcompat.widget.ViewStubCompat
 import androidx.constraintlayout.widget.ConstraintLayout
 import androidx.constraintlayout.widget.ConstraintSet
@@ -105,7 +104,6 @@ import org.videolan.vlc.gui.helpers.UiTools.showVideoTrack
 import org.videolan.vlc.gui.helpers.hf.checkPIN
 import org.videolan.vlc.gui.view.PlayerProgress
 import org.videolan.vlc.gui.video.dualview.DualViewBar
-import org.videolan.vlc.gui.video.dualview.DualViewDelegate
 import org.videolan.vlc.isVLC4
 import org.videolan.vlc.manageAbRepeatStep
 import org.videolan.vlc.media.MediaUtils
@@ -119,11 +117,6 @@ import java.text.DateFormat
 import java.util.Calendar
 import java.util.Locale
 
-
-private const val DUAL_VIEW_RESUME = 1
-private const val DUAL_VIEW_SPLIT_NOW = 2
-private const val DUAL_VIEW_SPLIT_MIDDLE = 3
-private const val DUAL_VIEW_SPLIT_MIDDLE_SYNC = 4
 
 class VideoPlayerOverlayDelegate (private val player: VideoPlayerActivity) {
 
@@ -1021,7 +1014,6 @@ class VideoPlayerOverlayDelegate (private val player: VideoPlayerActivity) {
         if (!fromUser && (player.isTalkbackIsEnabled() && !forceTalkback)) return
         if (player.isShowing) {
             if (isBookmarkShown()) hideBookmarks()
-            dualViewMenu?.dismiss()
             player.handler.removeMessages(VideoPlayerActivity.FADE_OUT)
             if (!player.displayManager.isPrimary) {
                 overlayBackground?.startAnimation(AnimationUtils.loadAnimation(player, android.R.anim.fade_out))
@@ -1165,8 +1157,8 @@ class VideoPlayerOverlayDelegate (private val player: VideoPlayerActivity) {
     private fun initDualView() {
         val dualView = player.dualViewDelegate
         hudBinding.dualViewPins.delegate = dualView
-        hudBinding.dualViewToggle.setOnClickListener { view ->
-            if (dualView.isActive) dualView.toggleBar() else showDualViewMenu(view)
+        hudBinding.dualViewToggle.setOnClickListener {
+            if (dualView.isActive) dualView.toggleBar() else dualView.quickStart()
         }
         dualView.state.observe(player) { state ->
             hudBinding.dualViewPins.timeline = state?.timeline
@@ -1185,7 +1177,6 @@ class VideoPlayerOverlayDelegate (private val player: VideoPlayerActivity) {
     }
 
     private var dualViewBarShown = false
-    private var dualViewMenu: PopupMenu? = null
 
     private fun updateDualViewBar() {
         val dualView = player.dualViewDelegate
@@ -1197,31 +1188,6 @@ class VideoPlayerOverlayDelegate (private val player: VideoPlayerActivity) {
         dualViewBarShown = open
         // Keep the controls up while the bar is open, so syncing doesn't need a pause
         if (open) showOverlayTimeout(VideoPlayerActivity.OVERLAY_INFINITE) else showOverlay(true)
-    }
-
-    private fun showDualViewMenu(anchor: View) {
-        val dualView = player.dualViewDelegate
-        val length = player.service?.length ?: return
-        val saved = dualView.savedTimeline()
-        dualViewMenu = PopupMenu(player, anchor).apply {
-            setOnDismissListener { dualViewMenu = null }
-            if (saved != null) menu.add(0, DUAL_VIEW_RESUME, 0, player.getString(R.string.dual_view_resume,
-                    Tools.millisToString(saved.timeline.split), DualViewDelegate.formatShift(saved.timeline.segments[0].offset - saved.timeline.split)))
-            menu.add(0, DUAL_VIEW_SPLIT_NOW, 1, player.getString(R.string.dual_view_split_here, Tools.millisToString(dualView.currentMainTime().coerceAtLeast(0L))))
-            menu.add(0, DUAL_VIEW_SPLIT_MIDDLE, 2, player.getString(R.string.dual_view_split_middle_at, Tools.millisToString(length / 2)))
-            menu.add(0, DUAL_VIEW_SPLIT_MIDDLE_SYNC, 3, R.string.dual_view_split_middle_sync)
-            setOnMenuItemClickListener { item ->
-                when (item.itemId) {
-                    DUAL_VIEW_RESUME -> dualView.resume()
-                    DUAL_VIEW_SPLIT_NOW -> dualView.splitNow()
-                    DUAL_VIEW_SPLIT_MIDDLE -> dualView.splitMiddle(false)
-                    DUAL_VIEW_SPLIT_MIDDLE_SYNC -> dualView.splitMiddle(true)
-                }
-                true
-            }
-            show()
-        }
-        showOverlay()
     }
 
     fun isBookmarkShown() = bookmarkListDelegate != null && bookmarkListDelegate?.visible == true

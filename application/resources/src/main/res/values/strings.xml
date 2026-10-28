@@ -1483,6 +1483,12 @@
     <string name="dual_view_scan">Find cuts</string>
     <string name="dual_view_scanning">Finding cuts… %d%%</string>
     <string name="dual_view_undo">Undo</string>
+    <string name="dual_view_more">More dual view options</string>
+    <string name="dual_view_loading_audio">Loading the audio… %d%%</string>
+    <plurals name="dual_view_resume_cuts">
+        <item quantity="one">Resume: POV 2 at %1$s, offset %2$s, %3$d cut</item>
+        <item quantity="other">Resume: POV 2 at %1$s, offset %2$s, %3$d cuts</item>
+    </plurals>
     <string name="dual_view_cut_found">Cut found at %1$s, offset %2$s after it</string>
     <plurals name="dual_view_scanned">
         <item quantity="one">Found %d cut</item>

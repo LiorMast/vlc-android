@@ -36,4 +36,12 @@ class SavedTimelineCodecTest {
         assertNull(SavedTimelineCodec.decode("", 100_000))
         assertNull(SavedTimelineCodec.decode("1000;1000;1;100000;0", 100_000))
     }
+
+    @Test
+    fun keepsEveryCutAndBothBounds() {
+        val cuts = DualViewTimeline(600_000, 12_000, 300_000, 587_000,
+                listOf(Segment(12_000, 301_000), Segment(80_500, 304_250), Segment(150_000, 299_990), Segment(222_222, 305_000)))
+        val saved = SavedTimeline(cuts, 1)
+        assertEquals(saved, SavedTimelineCodec.decode(SavedTimelineCodec.encode(saved, 1L), 600_000))
+    }
 }

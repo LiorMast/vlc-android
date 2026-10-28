@@ -87,6 +87,11 @@ class DualViewDelegate(private val activity: VideoPlayerActivity) : DualViewSync
      */
     val canUndo = MutableLiveData(false)
 
+    /**
+     * How much of the video's audio was read ahead, null when nothing is being read
+     */
+    val audioProgress = MutableLiveData<Float?>(null)
+
     val isActive: Boolean
         get() = state.value != null
 
@@ -108,6 +113,8 @@ class DualViewDelegate(private val activity: VideoPlayerActivity) : DualViewSync
     // Kept for the video while it plays: holds the audio read so far
     private var audioSync: AudioSync? = null
     private var audioSyncLocation: Uri? = null
+    private var prefetchJob: Job? = null
+    private var prefetchedLocation: Uri? = null
     private var undoTimeline: DualViewTimeline? = null
     // Brought back once the main player plays the same video again
     private var restoreOnPlaying: State? = null
@@ -141,6 +148,18 @@ class DualViewDelegate(private val activity: VideoPlayerActivity) : DualViewSync
         return store.load(location, service.length)
     }
 
+    /**
+     * The HUD button: brings back the saved timeline, else splits in the middle, matches the
+     * audio and finds the cuts
+     */
+    fun quickStart() {
+        if (savedTimeline() != null) resume()
+        else split((activity.service?.length ?: 0L) / 2) { audio, timeline ->
+            val (synced, status) = wholeSync(audio, timeline)
+            if (synced == null) null to status else findCuts(audio, synced)
+        }
+    }
+
     fun resume() {
         val saved = savedTimeline() ?: return
         start(saved.timeline, saved.audioPov)
@@ -150,14 +169,17 @@ class DualViewDelegate(private val activity: VideoPlayerActivity) : DualViewSync
     /**
      * POV 2 starts where the main player is now
      */
-    fun splitNow() = split(currentMainTime(), false)
+    fun splitNow() = split(currentMainTime())
 
     /**
      * POV 2 starts in the middle of the video, then optionally match the audio for the exact offset
      */
-    fun splitMiddle(syncWithAudio: Boolean) = split((activity.service?.length ?: 0L) / 2, syncWithAudio)
+    fun splitMiddle(syncWithAudio: Boolean) = split((activity.service?.length ?: 0L) / 2, if (syncWithAudio) ::wholeSync else null)
 
-    private fun split(time: Long, syncWithAudio: Boolean) {
+    /**
+     * POV 2 starts at [time], then [search] runs on the new timeline if given
+     */
+    private fun split(time: Long, search: (suspend (AudioSync, DualViewTimeline) -> Pair<DualViewTimeline?, Status>)? = null) {
         val length = activity.service?.length ?: return
         if (!DualViewTimeline.canSplit(length, time)) {
             Toast.makeText(activity, R.string.dual_view_cant_split, Toast.LENGTH_SHORT).show()
@@ -167,7 +189,7 @@ class DualViewDelegate(private val activity: VideoPlayerActivity) : DualViewSync
         // Keep hearing what the main player shows, unless a POV was already chosen
         start(timeline, state.value?.audioPov ?: timeline.povAt(currentMainTime()).coerceAtLeast(1))
         barOpen.value = true
-        if (syncWithAudio) runAudio { audio, timeline -> wholeSync(audio, timeline) }
+        search?.let { runAudio(it) }
     }
 
     fun toggleBar() {
@@ -189,12 +211,7 @@ class DualViewDelegate(private val activity: VideoPlayerActivity) : DualViewSync
      */
     fun scan() {
         if (!isActive) return
-        runAudio { audio, timeline ->
-            when (val result = audio.scan(timeline, readingProgress(), { progress -> post { setStatus(Status.Matching(progress)) } })) {
-                is AudioSync.Result.Segments -> timeline.withSegments(result.segments) to Status.Scanned(result.segments.size - 1)
-                else -> null to failure(result)
-            }
-        }
+        runAudio(::findCuts)
     }
 
     fun cancelSync() {
@@ -320,9 +337,15 @@ class DualViewDelegate(private val activity: VideoPlayerActivity) : DualViewSync
         state.value = null
         barOpen.value = false
         restoreOnPlaying = null
-        audioSync = null
-        audioSyncLocation = null
         setUndo(null)
+    }
+
+    /**
+     * The player goes away: drop the audio read for the video too
+     */
+    fun release() {
+        close()
+        dropAudio()
     }
 
     fun setVolume(volume: Int) {
@@ -389,6 +412,7 @@ class DualViewDelegate(private val activity: VideoPlayerActivity) : DualViewSync
         when (event.type) {
             MediaPlayer.Event.Opening -> {
                 val location = activity.service?.currentMediaWrapper?.uri
+                if (audioSyncLocation?.let { it != location } == true) dropAudio()
                 if (state.value?.location?.let { it != location } == true) close()
                 if (restoreOnPlaying?.location?.let { it != location } == true) restoreOnPlaying = null
             }
@@ -489,6 +513,7 @@ class DualViewDelegate(private val activity: VideoPlayerActivity) : DualViewSync
         updateWindow()
         applyVolumes()
         newSync.start()
+        prefetchAudio(newState, mainTime)
         save(newState)
         if (!service.isPlaying) alignPausedMain()
     }
@@ -586,6 +611,32 @@ class DualViewDelegate(private val activity: VideoPlayerActivity) : DualViewSync
         })
     }
 
+    /**
+     * Reads all of the video's audio in the background, once per playback, so the audio features
+     * find it ready
+     */
+    private fun prefetchAudio(current: State, mainTime: Long) {
+        if (prefetchJob?.isActive == true || prefetchedLocation == current.location) return
+        val audio = audioFor(current)
+        prefetchJob = activity.lifecycleScope.launch {
+            val complete = audio.prefetch(current.timeline.pov1TimeAt(mainTime.coerceAtLeast(0L))) { progress ->
+                post { if (audioSync === audio && progress < 1F) audioProgress.value = progress }
+            }
+            if (audioSync !== audio) return@launch
+            audioProgress.value = null
+            if (complete) prefetchedLocation = current.location
+        }
+    }
+
+    private fun dropAudio() {
+        prefetchJob?.cancel()
+        prefetchJob = null
+        prefetchedLocation = null
+        audioProgress.value = null
+        audioSync = null
+        audioSyncLocation = null
+    }
+
     private fun audioFor(current: State): AudioSync {
         audioSync?.takeIf { audioSyncLocation == current.location }?.let { return it }
         val source = AudioSync.Source(current.playbackUri, current.location, "${DualViewStore.hash(current.location)}_${current.timeline.length}")
@@ -627,6 +678,13 @@ class DualViewDelegate(private val activity: VideoPlayerActivity) : DualViewSync
             setStatus(newStatus)
         }
     }
+
+    private suspend fun findCuts(audio: AudioSync, timeline: DualViewTimeline): Pair<DualViewTimeline?, Status> =
+            when (val result = audio.scan(timeline, readingProgress(), { progress -> post { setStatus(Status.Matching(progress)) } })) {
+                is AudioSync.Result.Segments -> timeline.withSegments(result.segments) to Status.Scanned(result.segments.size - 1)
+                // A timeline found before scanning still counts
+                else -> timeline to failure(result)
+            }
 
     private suspend fun wholeSync(audio: AudioSync, timeline: DualViewTimeline): Pair<DualViewTimeline?, Status> =
             when (val result = audio.findOffset(timeline, readingProgress())) {

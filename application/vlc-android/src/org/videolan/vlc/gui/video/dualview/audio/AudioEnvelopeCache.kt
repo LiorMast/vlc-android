@@ -76,6 +76,14 @@ class AudioEnvelopeCache(private val source: AudioEnvelopeSource) {
     }
 
     /**
+     * How much of [range] was read, in ms
+     */
+    fun covered(range: LongRange): Long = synchronized(parts) {
+        val wanted = snap(range.first)..ceil(range.last)
+        (wanted.last - wanted.first) - missing(wanted).sumOf { it.last - it.first }
+    }
+
+    /**
      * Whether all of [range] was read
      */
     fun has(range: LongRange) = synchronized(parts) { missing(snap(range.first)..ceil(range.last)).isEmpty() }
