@@ -209,6 +209,7 @@ import org.videolan.vlc.gui.helpers.UiTools
 import org.videolan.vlc.gui.helpers.UiTools.addToPlaylist
 import org.videolan.vlc.gui.helpers.UiTools.showPinIfNeeded
 import org.videolan.vlc.gui.helpers.hf.StoragePermissionsDelegate
+import org.videolan.vlc.gui.video.dualview.DualViewDelegate
 import org.videolan.vlc.interfaces.IPlaybackSettingsController
 import org.videolan.vlc.media.NO_LENGTH_PROGRESS_MAX
 import org.videolan.vlc.media.PlaylistManager
@@ -326,6 +327,10 @@ open class VideoPlayerActivity : AppCompatActivity(), PlaybackService.Callback, 
     val orientationDelegate: VideoPlayerOrientationDelegate by lazy(LazyThreadSafetyMode.NONE) { VideoPlayerOrientationDelegate(this@VideoPlayerActivity) }
     private val playerKeyListenerDelegate: PlayerKeyListenerDelegate by lazy(LazyThreadSafetyMode.NONE) { PlayerKeyListenerDelegate(this@VideoPlayerActivity) }
     val tipsDelegate: VideoTipsDelegate by lazy(LazyThreadSafetyMode.NONE) { VideoTipsDelegate(this@VideoPlayerActivity) }
+    private val dualViewLazy = lazy(LazyThreadSafetyMode.NONE) { DualViewDelegate(this@VideoPlayerActivity) }
+    val dualViewDelegate: DualViewDelegate by dualViewLazy
+    private val dualView: DualViewDelegate?
+        get() = if (dualViewLazy.isInitialized()) dualViewDelegate else null
     var isTv: Boolean = false
 
     private val dialogsDelegate = DialogDelegate()
@@ -965,6 +970,8 @@ open class VideoPlayerActivity : AppCompatActivity(), PlaybackService.Callback, 
     @TargetApi(Build.VERSION_CODES.JELLY_BEAN_MR1)
     override fun onStop() {
         super.onStop()
+        // Before playback stops, so the main player gets its sound back first
+        dualView?.onStop()
         service?.playlistManager?.let {
             savedMediaList = ArrayList(it.getMediaList())
             savedMediaIndex = it.currentIndex
@@ -1026,6 +1033,7 @@ open class VideoPlayerActivity : AppCompatActivity(), PlaybackService.Callback, 
             onCleared()
         }
         optionsDelegate = null
+        dualView?.close()
         overlayDelegate.onDestroy()
 
         // Dismiss the presentation when the activity is not visible.
@@ -1513,20 +1521,20 @@ open class VideoPlayerActivity : AppCompatActivity(), PlaybackService.Callback, 
     private fun volumeUp() {
         if (isMute) {
             updateMute()
-        } else service?.let { service ->
+        } else service?.let {
             var volume = if (audiomanager.getStreamVolume(AudioManager.STREAM_MUSIC) < audioMax)
                 audiomanager.getStreamVolume(AudioManager.STREAM_MUSIC) + 1
             else
-                (service.volume.toFloat() * audioMax / 100 + 1).roundToInt()
+                (playerVolume.toFloat() * audioMax / 100 + 1).roundToInt()
             volume = volume.coerceAtLeast(0).coerceAtMost(audioMax * if (isAudioBoostEnabled) 2 else 1)
             setAudioVolume(volume)
         }
     }
 
     private fun volumeDown() {
-        service?.let { service ->
-            var vol = if (service.volume > 100)
-                (((service.volume * audioMax).div(100)) - 1)
+        service?.let {
+            var vol = if (playerVolume > 100)
+                (((playerVolume * audioMax).div(100)) - 1)
             else
                 audiomanager.getStreamVolume(AudioManager.STREAM_MUSIC) - 1
             vol = vol.coerceAtLeast(0).coerceAtMost(audioMax * if (isAudioBoostEnabled) 2 else 1)
@@ -1575,6 +1583,7 @@ open class VideoPlayerActivity : AppCompatActivity(), PlaybackService.Callback, 
     }
 
     override fun onMediaPlayerEvent(event: MediaPlayer.Event) {
+        dualView?.onMainPlayerEvent(event)
         service?.let { service ->
             when (event.type) {
                 MediaPlayer.Event.Playing -> onPlaying()
@@ -1759,6 +1768,7 @@ open class VideoPlayerActivity : AppCompatActivity(), PlaybackService.Callback, 
             FrameRateManager(this, service!!).matchFrameRate(surfaceView, window)
         }
         overlayDelegate.updatePlaybackSpeedChip()
+        dualView?.onPlaying()
     }
 
     private fun handleVout(voutCount: Int) {
@@ -1805,6 +1815,7 @@ open class VideoPlayerActivity : AppCompatActivity(), PlaybackService.Callback, 
         super.onPictureInPictureModeChanged(isInPictureInPictureMode)
         service?.isInPiPMode?.value = isInPictureInPictureMode
         service?.mediaplayer?.updateVideoSurfaces()
+        dualView?.onPictureInPictureModeChanged(isInPictureInPictureMode)
     }
 
     internal fun sendMouseEvent(action: Int, x: Int, y: Int) {
@@ -1823,13 +1834,24 @@ open class VideoPlayerActivity : AppCompatActivity(), PlaybackService.Callback, 
         return service?.updateViewpoint(yaw, pitch, 0f, fov, false) == true
     }
 
-    internal fun initAudioVolume() = service?.let { service ->
-        if (service.volume <= 100) {
+    internal fun initAudioVolume() = service?.let {
+        if (playerVolume <= 100) {
             volume = audiomanager.getStreamVolume(AudioManager.STREAM_MUSIC).toFloat()
             originalVol = audiomanager.getStreamVolume(AudioManager.STREAM_MUSIC).toFloat()
         } else {
-            volume = service.volume.toFloat() * audioMax / 100
+            volume = playerVolume.toFloat() * audioMax / 100
         }
+    }
+
+    /**
+     * The VLC volume the user set. Dual view may route it to its second player.
+     */
+    private val playerVolume: Int
+        get() = dualView?.takeIf { it.isActive }?.volume ?: service?.volume ?: 0
+
+    private fun setPlayerVolume(volume: Int) {
+        val dualView = dualView
+        if (dualView != null && dualView.isActive) dualView.setVolume(volume) else service?.setVolume(volume)
     }
 
     //Toast that appears only once
@@ -1850,9 +1872,9 @@ open class VideoPlayerActivity : AppCompatActivity(), PlaybackService.Callback, 
 
         /* Since android 4.3, the safe volume warning dialog is displayed only with the FLAG_SHOW_UI flag.
          * We don't want to always show the default UI volume, so show it only when volume is not set. */
-        service?.let { service ->
+        service?.let {
             if (vol <= audioMax) {
-                service.setVolume(100)
+                setPlayerVolume(100)
                 if (vol != audiomanager.getStreamVolume(AudioManager.STREAM_MUSIC)) {
                     try {
                         audiomanager.setStreamVolume(AudioManager.STREAM_MUSIC, vol, 0)
@@ -1866,18 +1888,18 @@ open class VideoPlayerActivity : AppCompatActivity(), PlaybackService.Callback, 
                 vol = (vol * 100 / audioMax.toFloat()).roundToInt()
             } else {
                 vol = (vol * 100 / audioMax.toFloat()).roundToInt()
-                service.setVolume(vol.toFloat().roundToInt())
+                setPlayerVolume(vol.toFloat().roundToInt())
             }
             overlayDelegate.showVolumeBar(vol)
-            volSave = service.volume
+            volSave = playerVolume
         }
     }
 
     private fun mute(mute: Boolean) {
-        service?.let { service ->
+        service?.let {
             isMute = mute
-            if (isMute) volSave = service.volume
-            service.setVolume(if (isMute) 0 else volSave)
+            if (isMute) volSave = playerVolume
+            setPlayerVolume(if (isMute) 0 else volSave)
         }
     }
 
@@ -2106,10 +2128,13 @@ open class VideoPlayerActivity : AppCompatActivity(), PlaybackService.Callback, 
 
     internal fun seek(position: Long, length: Long, fromUser: Boolean = false, fast:Boolean = false) {
         service?.let { service ->
-            forcedTime = position
+            // Paused dual view shows whole frames
+            val target = if (length > 0) dualView?.mainSeekTarget(position) ?: position else position
+            if (length > 0) dualView?.onMainSeek(target)
+            forcedTime = target
             lastTime = service.getTime()
-            service.seek(position, length.toDouble(), fromUser, fast)
-            service.playlistManager.player.updateProgress(position)
+            service.seek(target, length.toDouble(), fromUser, fast)
+            service.playlistManager.player.updateProgress(target)
         }
     }
 

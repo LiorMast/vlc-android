@@ -50,6 +50,22 @@ fun IMedia.getAllTracks(): List<IMedia.Track> {
 
 fun MediaPlayer.getSelectedVideoTrack(): VlcTrack? = currentVideoTrack?.let { VlcTrackImpl(it) }
 
+/**
+ * Width / height of the current video as displayed: pixel aspect and rotation included
+ */
+fun MediaPlayer.getVideoDisplayAspect(): Float? {
+    val track = currentVideoTrack ?: return null
+    if (track.width <= 0 || track.height <= 0) return null
+    val sar = if (track.sarNum > 0 && track.sarDen > 0) track.sarNum.toFloat() / track.sarDen else 1F
+    val aspect = track.width * sar / track.height
+    val rotated = when (track.orientation) {
+        IMedia.VideoTrack.Orientation.LeftTop, IMedia.VideoTrack.Orientation.LeftBottom,
+        IMedia.VideoTrack.Orientation.RightTop, IMedia.VideoTrack.Orientation.RightBottom -> true
+        else -> false
+    }
+    return if (rotated) 1F / aspect else aspect
+}
+
 fun MediaPlayer.getSelectedAudioTrack(): VlcTrack? {
     val currentTrackId = audioTrack
    audioTracks?.forEach {

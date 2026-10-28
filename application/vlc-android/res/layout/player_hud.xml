@@ -20,6 +20,10 @@
                 type="Float" />
 
         <variable
+                name="dual_view_split"
+                type="Float" />
+
+        <variable
                 name="player"
                 type="org.videolan.vlc.gui.video.VideoPlayerActivity" />
     </data>
@@ -312,6 +316,39 @@
                     vlc:layout_constraintTop_toTopOf="parent"
                     vlc:srcCompat="@drawable/ic_abrepeat_marker" />
 
+
+        </androidx.constraintlayout.widget.ConstraintLayout>
+
+        <!-- Where POV 2 starts while dual view is on -->
+        <androidx.constraintlayout.widget.ConstraintLayout
+                android:id="@+id/dual_view_marker_container"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:clipToPadding="false"
+                android:layoutDirection="ltr"
+                android:paddingLeft="8dp"
+                android:paddingRight="8dp"
+                android:visibility="gone"
+                vlc:layout_constraintBottom_toTopOf="@+id/player_overlay_seekbar"
+                vlc:layout_constraintEnd_toEndOf="@+id/player_overlay_seekbar"
+                vlc:layout_constraintStart_toStartOf="@+id/player_overlay_seekbar">
+
+            <androidx.constraintlayout.widget.Guideline
+                    android:id="@+id/dual_view_marker_guideline"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:orientation="vertical"
+                    vlc:constraintPercent="@{dual_view_split}" />
+
+            <ImageView
+                    android:id="@+id/dual_view_marker"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:importantForAccessibility="no"
+                    vlc:layout_constraintLeft_toLeftOf="@+id/dual_view_marker_guideline"
+                    vlc:layout_constraintRight_toRightOf="@+id/dual_view_marker_guideline"
+                    vlc:layout_constraintTop_toTopOf="parent"
+                    vlc:srcCompat="@drawable/ic_dual_view_marker" />
 
         </androidx.constraintlayout.widget.ConstraintLayout>
 

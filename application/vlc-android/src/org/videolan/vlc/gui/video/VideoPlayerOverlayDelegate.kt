@@ -595,6 +595,10 @@ class VideoPlayerOverlayDelegate (private val player: VideoPlayerActivity) {
 
                     service.manageAbRepeatStep(hudBinding.abRepeatReset, hudBinding.abRepeatStop, hudBinding.abRepeatContainer, abRepeatAddMarker)
                 }
+                player.dualViewDelegate.state.observe(player) { state ->
+                    hudBinding.dualViewSplit = state?.let { it.timeline.split / it.timeline.length.toFloat() } ?: 0F
+                    hudBinding.dualViewMarkerContainer.visibility = if (state == null) View.GONE else View.VISIBLE
+                }
                 service.playlistManager.delayValue.observe(player) {
                     player.delayDelegate.delayChanged(it, service)
                 }

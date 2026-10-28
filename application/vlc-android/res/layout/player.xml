@@ -20,6 +20,16 @@
             android:layout_height="match_parent"
             android:fitsSystemWindows="false" />
 
+    <!-- Dual view window: above the video, under the overlays and the controls -->
+    <androidx.appcompat.widget.ViewStubCompat
+            android:id="@+id/dual_view_stub"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_gravity="top|left"
+            android:inflatedId="@+id/dual_view_window"
+            android:layout="@layout/dual_view_window"
+            tools:ignore="RtlHardcoded" />
+
 
     <androidx.appcompat.widget.ViewStubCompat
             android:id="@+id/player_seek_stub"

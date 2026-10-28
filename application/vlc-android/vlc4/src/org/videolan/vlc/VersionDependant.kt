@@ -39,6 +39,15 @@ fun MediaPlayer.getSelectedVideoTrack(): VlcTrack? {
     return getSelectedTrack(IMedia.Track.Type.Video)?.let { VlcTrackImpl(it) }
 }
 
+/**
+ * Width / height of the current video, from its stored size
+ */
+fun MediaPlayer.getVideoDisplayAspect(): Float? {
+    val track = getSelectedVideoTrack() ?: return null
+    if (track.getWidth() <= 0 || track.getHeight() <= 0) return null
+    return track.getWidth().toFloat() / track.getHeight()
+}
+
 fun MediaPlayer.getSelectedAudioTrack(): VlcTrack? {
     return getSelectedTrack(IMedia.Track.Type.Audio)?.let { VlcTrackImpl(it) }
 }

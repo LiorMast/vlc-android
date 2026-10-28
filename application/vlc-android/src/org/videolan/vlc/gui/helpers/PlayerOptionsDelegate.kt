@@ -47,6 +47,7 @@ import org.videolan.vlc.gui.helpers.UiTools.addToPlaylist
 import org.videolan.vlc.gui.helpers.hf.PinCodeDelegate
 import org.videolan.vlc.gui.helpers.hf.checkPIN
 import org.videolan.vlc.gui.video.VideoPlayerActivity
+import org.videolan.vlc.gui.video.dualview.DualViewDialog
 import org.videolan.vlc.media.PlayerController
 import org.videolan.vlc.util.TextUtils
 import org.videolan.vlc.util.getScreenHeight
@@ -80,6 +81,7 @@ private const val ID_AUDIO_CONTROL_SETTING = 20L
 private const val ID_SAFE_MODE_LOCK = 21L
 private const val ID_SAFE_MODE_UNLOCK = 22L
 private const val ID_SHARE = 23L
+private const val ID_DUAL_VIEW = 24L
 @SuppressLint("ShowToast")
 class PlayerOptionsDelegate(val activity: FragmentActivity, val service: PlaybackService, private val showABReapeat:Boolean = true)  {
 
@@ -113,6 +115,8 @@ class PlayerOptionsDelegate(val activity: FragmentActivity, val service: Playbac
                 options.add(PlayerOption(ID_PLAY_AS_AUDIO, R.drawable.ic_playasaudio_on, res.getString(R.string.play_as_audio)))
             if (primary && AndroidDevices.pipAllowed && !AndroidDevices.isDex(activity))
                 options.add(PlayerOption(ID_POPUP_VIDEO, R.drawable.ic_popup_dim, res.getString(R.string.ctx_pip_title)))
+            if ((activity as VideoPlayerActivity).dualViewDelegate.isAvailable())
+                options.add(PlayerOption(ID_DUAL_VIEW, R.drawable.ic_dual_view, res.getString(R.string.dual_view)))
             if (primary)
                 options.add(PlayerOption(ID_REPEAT, R.drawable.ic_repeat, res.getString(R.string.repeat_title)))
             if (service.canShuffle()) options.add(PlayerOption(ID_SHUFFLE, R.drawable.ic_player_shuffle, res.getString(R.string.shuffle_title)))
@@ -329,6 +333,10 @@ class PlayerOptionsDelegate(val activity: FragmentActivity, val service: Playbac
             ID_EQUALIZER -> {
                 newFragment = EqualizerFragmentDialog.newInstance()
                 tag = "equalizer"
+            }
+            ID_DUAL_VIEW -> {
+                newFragment = DualViewDialog.newInstance()
+                tag = "dual_view"
             }
             ID_SAVE_PLAYLIST -> {
                 activity.addToPlaylist(service.media)

@@ -1,0 +1,107 @@
+<?xml version="1.0" encoding="utf-8"?>
+<org.videolan.vlc.gui.video.dualview.DualViewWindow xmlns:android="http://schemas.android.com/apk/res/android"
+        xmlns:app="http://schemas.android.com/apk/res-auto"
+        xmlns:tools="http://schemas.android.com/tools"
+        android:id="@+id/dual_view_window"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_gravity="top|left"
+        android:background="@drawable/dual_view_window_background"
+        android:contentDescription="@string/dual_view_window"
+        android:padding="2dp"
+        android:visibility="gone"
+        tools:ignore="RtlHardcoded">
+
+    <org.videolan.libvlc.util.VLCVideoLayout
+            android:id="@+id/dual_view_video"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:importantForAccessibility="no" />
+
+    <TextView
+            android:id="@+id/dual_view_message"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:background="#99000000"
+            android:gravity="center"
+            android:padding="8dp"
+            android:textColor="@color/white"
+            android:textSize="13sp"
+            android:visibility="gone" />
+
+    <TextView
+            android:id="@+id/dual_view_label"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_gravity="top|left"
+            android:layout_margin="6dp"
+            android:background="@drawable/dual_view_chip_background"
+            android:drawablePadding="4dp"
+            android:gravity="center_vertical"
+            android:paddingLeft="8dp"
+            android:paddingTop="2dp"
+            android:paddingRight="8dp"
+            android:paddingBottom="2dp"
+            android:textColor="@color/white"
+            android:textSize="12sp" />
+
+    <TextView
+            android:id="@+id/dual_view_status"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_gravity="bottom|left"
+            android:layout_margin="6dp"
+            android:background="@drawable/dual_view_chip_background"
+            android:paddingLeft="8dp"
+            android:paddingTop="2dp"
+            android:paddingRight="8dp"
+            android:paddingBottom="2dp"
+            android:textColor="@color/white"
+            android:textSize="11sp"
+            android:visibility="gone" />
+
+    <LinearLayout
+            android:id="@+id/dual_view_controls"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_gravity="center"
+            android:background="@drawable/dual_view_chip_background"
+            android:orientation="horizontal"
+            android:padding="4dp"
+            android:visibility="gone">
+
+        <ImageButton
+                android:id="@+id/dual_view_swap"
+                android:layout_width="44dp"
+                android:layout_height="44dp"
+                android:background="?attr/selectableItemBackgroundBorderless"
+                android:contentDescription="@string/dual_view_swap"
+                app:srcCompat="@drawable/ic_dual_view_swap" />
+
+        <ImageButton
+                android:id="@+id/dual_view_audio"
+                android:layout_width="44dp"
+                android:layout_height="44dp"
+                android:background="?attr/selectableItemBackgroundBorderless"
+                android:contentDescription="@string/dual_view_audio_from_window"
+                app:srcCompat="@drawable/ic_dual_view_audio" />
+
+        <ImageButton
+                android:id="@+id/dual_view_close"
+                android:layout_width="44dp"
+                android:layout_height="44dp"
+                android:background="?attr/selectableItemBackgroundBorderless"
+                android:contentDescription="@string/dual_view_turn_off"
+                app:srcCompat="@drawable/ic_dual_view_close" />
+    </LinearLayout>
+
+    <ImageView
+            android:id="@+id/dual_view_resize"
+            android:layout_width="32dp"
+            android:layout_height="32dp"
+            android:layout_gravity="bottom|right"
+            android:contentDescription="@string/dual_view_resize"
+            android:padding="6dp"
+            app:srcCompat="@drawable/ic_dual_view_resize" />
+
+</org.videolan.vlc.gui.video.dualview.DualViewWindow>
